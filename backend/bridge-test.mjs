@@ -4,9 +4,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-const PORT = 9338
-const PROFILE = 'C:/Users/Richa/AppData/Local/Temp/na-cdp-bridge-live'
-const SITE = "https://richardhuke.github.io/neverattend/"
+const PORT = 9339
+const PROFILE = 'C:/Users/Richa/AppData/Local/Temp/na-cdp-bridge-q'
+const SITE = "https://richardhuke.github.io/neverattend/?api=https://reservation-prime-keys-stops.trycloudflare.com"
 const BACKEND = "https://reservation-prime-keys-stops.trycloudflare.com"
 const shots = path.resolve('shots')
 
@@ -49,7 +49,7 @@ const shot = async name => {
 await send('Page.enable'); await send('Runtime.enable')
 await send('Page.navigate', { url: SITE })
 await sleep(2500)
-await evalJs(`localStorage.setItem('neverattend-api-base', ${JSON.stringify(BACKEND)}); localStorage.setItem('neverattend-username','32401000001'); localStorage.setItem('neverattend-token','demo.MzI4MDEwMDAwMDE=.sig'); localStorage.setItem('neverattend-setup','1'); 1`)
+await evalJs(`localStorage.setItem('neverattend-username','32401000001'); localStorage.setItem('neverattend-token','demo.MzI4MDEwMDAwMDE=.sig'); localStorage.setItem('neverattend-setup','1'); 1`)
 await send('Page.reload', { ignoreCache: true })
 await sleep(3000)
 

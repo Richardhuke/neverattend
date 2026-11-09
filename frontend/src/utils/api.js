@@ -3,7 +3,17 @@
 // 优先级：localStorage > 构建期 VITE_API_BASE > 同源 ./api
 const KEY = 'neverattend-api-base'
 
+// 也支持 ?api=https://backend 一次性带上（方便分享到手机直接打开）
+function fromQuery () {
+  try {
+    const v = new URLSearchParams(location.search).get('api')
+    return v ? v.trim().replace(/\/+$/, '') : ''
+  } catch { return '' }
+}
+
 export function getApiBase () {
+  const q = fromQuery()
+  if (q) { setApiBase(q); return q }
   let v = ''
   try { v = localStorage.getItem(KEY) || '' } catch {}
   if (!v) v = import.meta.env.VITE_API_BASE || ''
