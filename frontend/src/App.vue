@@ -1,9 +1,10 @@
 <script setup>
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from './stores/user.js'
 
 const route = useRoute()
+const router = useRouter()
 const user = useUserStore()
 const nav = [
   { to: '/', label: 'Run', icon: '▶' },
@@ -12,6 +13,12 @@ const nav = [
 ]
 const active = path => (path === '/' ? route.path === '/' : route.path.startsWith(path))
 const initials = computed(() => (user.username ? user.username.slice(-4) : '----'))
+
+// 退出登录 = 清掉 localStorage 里的学号/token/密码密文，再回绑定页
+function logout () {
+  user.clear()
+  router.replace('/first-time')
+}
 </script>
 
 <template>
@@ -33,6 +40,7 @@ const initials = computed(() => (user.username ? user.username.slice(-4) : '----
       <div class="who">
         <span class="dot" :class="user.isFirstTime ? 'off' : 'on'"></span>
         <span class="who-id">{{ user.username || '未接入' }}</span>
+        <button v-if="!user.isFirstTime" class="who-out" title="退出登录：清除本机保存的学号与凭据" @click="logout">退出</button>
       </div>
     </header>
 
