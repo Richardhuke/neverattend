@@ -293,3 +293,62 @@ curl -s -D- -o /dev/null -X OPTIONS -H 'Origin: https://richardhuke.github.io' \
 ```bash
 cd neverattend && git pull && cd deploy && docker compose up -d --build
 ```
+
+## 不买域名：部署到腾讯云 CloudBase（WorkBuddy 同款，自带公网域名）
+
+CloudBase（云开发）的**云托管**可以把这个仓库直接构建成容器跑起来，平台分配一个默认公网域名（形如 `https://neverattend-xxxx.sh.run.tcloudbase.com`），不需要买域名、不需要买服务器、不需要备案。
+
+### 1. 登录
+
+```bash
+npm i -g @cloudbase/cli          # 已装可跳过；当前版本 3.9.2
+tcb login --flow device          # 打印一个授权链接 + 用户码，浏览器里点一次
+```
+
+链接形如 `https://tcb.cloud.tencent.com/dev#/cli-auth?user_code=XXXX-XXXX`，用微信/QQ 扫码或账号登录后确认授权即可（需要该腾讯云账号已实名）。
+
+### 2. 准备环境
+
+```bash
+tcb env list                     # 已有环境就直接用它的 envId
+tcb env create neverattend       # 没有则建一个（按量计费，新账号有免费额度）
+```
+
+### 3. 部署（仓库根目录执行，会按 Dockerfile 构建）
+
+```bash
+tcb cloudrun deploy \
+  --env-id <你的envId> \
+  --service-name neverattend \
+  --source . \
+  --port 8000 \
+  --open-access-types PUBLIC \
+  --env-params '{"TYYS_MOCK":"0","WATCH_AUTO_CHECKIN":"0","WATCH_INTERVAL_MS":"10000","ACCESS_KEY":"换成随机串","CORS_ORIGIN":"https://richardhuke.github.io"}' \
+  --min-num 1 --max-num 1 \
+  --wait --force
+```
+
+- `--open-access-types PUBLIC` = 允许公网访问；不给就是内网。
+- `--env-params` 会**整体覆盖**线上环境变量，改动时把旧的也一起带上。
+- 部署完成后 `tcb cloudrun list --env-id <id>` 能看到服务与默认域名；`tcb cloudrun logs --env-id <id> --service-name neverattend` 看运行日志。
+- 首次构建约 3–6 分钟（拉 node:22-alpine、装依赖、vite build）。
+
+### 4. 验收
+
+```bash
+curl -s https://<默认域名>/api/config | head -c 120     # {"mode":"live",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://<默认域名>/api/attendance/status?username=x\&token=x   # 401 = ACCESS_KEY 生效
+```
+
+前端可以有两个入口：直接用该域名打开整站；或 Pages 端 `?api=https://<默认域名>&key=<ACCESS_KEY>`。
+
+### 5. 与自建 VPS 的区别
+
+| 维度 | CloudBase 云托管 | 自建 VPS + Caddy |
+|---|---|---|
+| 域名 | 平台默认域名，免买免备案 | 要买域名 + 解析 + 备案（大陆） |
+| 证书 | 平台自动 | Caddy 自动 |
+| 成本 | 按量计费（新账号有免费额度） | ¥30–60/月固定 |
+| 出网到浙大 | 腾讯云广州/上海节点，通常可达；仍需实测 | 取决于机房 |
+| 会话 | 同样存内存，实例重启要重绑 | 同 |
+
