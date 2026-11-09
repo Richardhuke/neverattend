@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import { config } from '../config.js'
 import { pushEvent } from '../store.js'
 
@@ -39,6 +40,9 @@ export async function loginWithPassword (username, plainPassword) {
   const am = new ZJUAM(username, plainPassword)
   const service = `${config.tyys.base}${config.tyys.endpoints.casLogin}`
   const html = await am.loginSvc(service)
+  if (process.env.DUMP_HTML) {
+    try { fs.writeFileSync(process.env.DUMP_HTML, String(html)); pushEvent('info', 'auth', `已把 tyys 首屏 HTML 落盘：${process.env.DUMP_HTML}`) } catch {}
+  }
   const m = String(html).match(TOKEN_RE)
   if (!m) throw new Error('CAS 登录成功，但未能在返回页面中提取 token（页面结构可能已变更）')
   return { username: m[1], token: m[2], xh: m[1] }

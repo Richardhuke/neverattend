@@ -1,7 +1,27 @@
-const BASE = './api'
+
+// 后端地址可以在运行时指定：GitHub Pages 这种纯静态托管把地址填上就能连自建后端。
+// 优先级：localStorage > 构建期 VITE_API_BASE > 同源 ./api
+const KEY = 'neverattend-api-base'
+
+export function getApiBase () {
+  let v = ''
+  try { v = localStorage.getItem(KEY) || '' } catch {}
+  if (!v) v = import.meta.env.VITE_API_BASE || ''
+  return String(v).trim().replace(/\/+$/, '')
+}
+
+export function setApiBase (url) {
+  const v = String(url || '').trim().replace(/\/+$/, '')
+  try { v ? localStorage.setItem(KEY, v) : localStorage.removeItem(KEY) } catch {}
+}
+
+function base () {
+  const b = getApiBase()
+  return b ? b + '/api' : './api'
+}
 
 async function request (path, { method = 'POST', body } = {}) {
-  const res = await fetch(BASE + path, {
+  const res = await fetch(base() + path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined

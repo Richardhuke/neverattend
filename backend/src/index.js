@@ -8,6 +8,16 @@ import { pushEvent } from './store.js'
 
 const app = express()
 app.disable('x-powered-by')
+// GitHub Pages 等静态托管会从别的源来调接口，放开 CORS（本项目自己用，不设白名单）
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*')
+  res.setHeader('Vary', 'Origin')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Max-Age', '600')
+  if (req.method === 'OPTIONS') return res.sendStatus(204)
+  next()
+})
 app.use(express.json({ limit: '1mb' }))
 
 app.use('/api', apiRouter)

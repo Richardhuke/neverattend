@@ -46,7 +46,7 @@ router.post('/getToken', async (req, res) => {
     pushEvent('success', 'auth', `账号已接入：${me.xh || me.username}`)
     res.json({ username: me.xh || me.username, token: me.token })
   } catch (err) {
-    bad(res, 401, `CAS 登录失败：${err instanceof Error ? err.message : String(err)}`)
+    bad(res, 401, `CAS 登录失败：${err?.message || String(err)}`)
   }
 })
 
