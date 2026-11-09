@@ -201,3 +201,95 @@ Pages 只托管静态文件，没有后端，所以默认跑浏览器内演示�
 3. 打开 <https://richardhuke.github.io/neverattend/#/config>，在 **Backend** 卡里填第 2 步的地址 → 「测试连接」看到 `mode=live` → 「保存并重载」。
 
 保存后地址存在 `localStorage['neverattend-api-base']`，所有 `/api/*` 发往该后端，演示数据自动停用；`button` 清空输入框再保存即回到演示。后端已放开 CORS（回显 Origin、`OPTIONS` → 204），跨源可直接用。
+
+## 自建服务器 + 域名（不用隧道）
+
+目标形态：一台 VPS 跑 `neverattend` 后端，Caddy 反代并自动签 HTTPS，前端仍用 GitHub Pages（或也由同一个域名提供，静态产物已打进镜像）。
+
+### 1. 服务器
+
+| 项 | 建议 | 说明 |
+|---|---|---|
+| 配置 | 1 vCPU / 1 GB / 20 GB | 只跑 Node + Caddy，够用 |
+| 系统 | Ubuntu 22.04 / 24.04 | 下面命令按 Debian 系写 |
+| 地区 | 香港 / 新加坡 / 日本 | 免备案；**下单前先测这台机器能否访问 `www.tyys.zju.edu.cn`** |
+| 备案 | 大陆节点必须备案 | 不备案就用境外节点，或走已有备案域名 |
+
+先在服务器上验一下出网，再决定要不要买：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' http://www.tyys.zju.edu.cn/
+curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' https://zjuam.zju.edu.cn/cas/login
+```
+
+两个都返回 200（或 302）且耗时 < 2s，这台机器就能跑真实模式；超时/被重置说明线路到浙大不通，换机房。
+
+### 2. 域名
+
+买一个域名（阿里云/腾讯云/Cloudflare Registrar 都行），加一条 A 记录：
+
+```
+neverattend.example.com  →  <服务器公网 IP>
+```
+
+等 `dig +short neverattend.example.com` 返回那个 IP 再继续。**DNS 没生效时 Caddy 签证书会失败**，别提前开。
+
+### 3. 装 Docker
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER && newgrp docker    # 免 sudo
+```
+
+### 4. 拉代码、改两处、起服务
+
+```bash
+git clone https://github.com/Richardhuke/neverattend.git
+cd neverattend/deploy
+cp Caddyfile Caddyfile.bak
+sed -i 's/neverattend.example.com/你的域名/' Caddyfile          # 第 1 行
+sed -i 's/换成你自己的随机串/'"$(openssl rand -hex 16)"'/' docker-compose.yml  # ACCESS_KEY
+docker compose up -d --build
+docker compose logs -f caddy      # 看到 certificate obtained 就成了
+```
+
+`deploy/docker-compose.yml` 做的事：`app` 用仓库 `Dockerfile` 两段构建（前端产物打进 `static/`），只在容器网络暴露 8000；`caddy` 占 80/443，反代到 `app:8000` 并自动签证书。`restart: unless-stopped` 保证开机自启、崩了自动拉起。
+
+### 5. 验收（四条，缺一不可）
+
+```bash
+curl -s https://你的域名/api/config | head -c 200          # {"mode":"live",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://你的域名/api/attendance/status?username=x&token=x
+#   → 401（ACCESS_KEY 生效），说明公网没裸奔
+curl -s -H 'X-Access-Key: 你的key' -o /dev/null -w '%{http_code}\n' \
+  'https://你的域名/api/attendance/status?username=x&token=x'   # 非 401 即密钥通过
+curl -s -D- -o /dev/null -X OPTIONS -H 'Origin: https://richardhuke.github.io' \
+  https://你的域名/api/checkin | grep -i allow-headers          # 含 X-Access-Key
+```
+
+然后用手机/电脑打开 `https://你的域名/`（整站直接在服务器上），或打开
+`https://richardhuke.github.io/neverattend/?api=https://你的域名&key=你的key`
+—— 两者等价。
+
+### 6. 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `TYYS_MOCK` | `1`（镜像）/ `0`（compose） | `0` = 走真实浙大体艺 |
+| `ACCESS_KEY` | 空 | 非空则 `/api/*` 需要 `X-Access-Key`，`/api/config` 除外 |
+| `CORS_ORIGIN` | 空（回显 Origin） | 锁死只有一个前端来源能调 |
+| `WATCH_INTERVAL_MS` | `10000` | 守护轮询间隔 |
+| `WATCH_AUTO_CHECKIN` | `0` | `1` = 发现待签到/待签退自动提交 |
+| `DUMP_HTML` | 空 | 设路径则把 tyys 登录后首屏 HTML 落盘，用来核对真实接口路径 |
+
+### 7. 必须知道的三个坑
+
+- **会话在内存**：`sessionStore` 存进程内存，重启/重建容器后要重新在页面绑定一次（JWT 不落库，这是刻意的）。想让重启免登录，得自己加持久化，并接受"把 JWT 写盘"的风险。
+- **公网裸奔风险**：`ACCESS_KEY` 为空且 CORS 放开时，任何知道你域名的人都能把你的后端当代理用（他仍需要自己的浙大账号）。所以第 4 步一定要设 `ACCESS_KEY`。
+- **tyys 端点仍是推测**：`/app/course/student/list` 这类路径没抓包验证过（实测拿假 token 请求返回 Tomcat 400 而不是 404，说明路径可能存在）。等你用真实账号绑定后，如果接口报错，用 `DUMP_HTML=/tmp/tyys.html` 重启，把 `/tmp/tyys.html` 抓到的真实路径填回 `backend/src/config.js` 的 `DEFAULT_ENDPOINTS`（或服务器上放 `backend/config/tyys.endpoints.json` 覆盖）。
+
+### 8. 更新版本
+
+```bash
+cd neverattend && git pull && cd deploy && docker compose up -d --build
+```

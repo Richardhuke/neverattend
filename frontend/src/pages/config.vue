@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
-import { api, getApiBase, setApiBase } from '../utils/api.js'
+import { api, getAccessKey, getApiBase, setAccessKey, setApiBase } from '../utils/api.js'
 
 const data = ref(null)
 const err = ref('')
@@ -9,11 +9,13 @@ let timer = null
 
 // 后端地址（GitHub Pages 这类静态托管靠它连自建后端；留空=同源/演示）
 const apiBase = ref(getApiBase())
+const accessKey = ref(getAccessKey())
 const baseMsg = ref('')
 const testing = ref(false)
 
 function saveBase () {
   setApiBase(apiBase.value)
+  setAccessKey(accessKey.value)
   apiBase.value = getApiBase()
   baseMsg.value = apiBase.value ? '已保存，正在重新连接…' : '已清空，回到同源（演示模式由静态站自己接管）'
   setTimeout(() => { location.reload() }, 600)
@@ -23,7 +25,9 @@ async function testBase () {
   testing.value = true
   baseMsg.value = ''
   const saved = getApiBase()
+  const savedKey = getAccessKey()
   setApiBase(apiBase.value)
+  setAccessKey(accessKey.value)
   try {
     const c = await api.config()
     baseMsg.value = `连接成功：mode=${c.mode}，tyys=${c.tyysBase}（点「保存并重载」生效）`
@@ -32,6 +36,7 @@ async function testBase () {
     setApiBase(saved)
   } finally {
     setApiBase(saved) // 测试不改变当前生效地址
+    setAccessKey(savedKey)
     testing.value = false
   }
 }
@@ -68,12 +73,15 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
           <div class="row"><span class="k">后端地址</span><span class="v">
             <input v-model="apiBase" class="input" placeholder="https://your-backend.example.com" style="width:100%;max-width:420px" />
           </span></div>
+          <div class="row"><span class="k">Access Key</span><span class="v">
+            <input v-model="accessKey" class="input" type="password" placeholder="后端设了 ACCESS_KEY 才需要填" style="width:100%;max-width:420px" />
+          </span></div>
           <div class="row"><span class="k">&nbsp;</span><span class="v">
             <button class="btn sm" :disabled="testing" @click="testBase">{{ testing ? '测试中…' : '测试连接' }}</button>
             <button class="btn sm" @click="saveBase" style="margin-left:8px">保存并重载</button>
           </span></div>
           <div v-if="baseMsg" class="row"><span class="k">结果</span><span class="v small">{{ baseMsg }}</span></div>
-          <div class="row"><span class="k">说明</span><span class="v small">GitHub Pages 只有静态文件，必须连一个跑着本项目的后端（Render / 自建 VPS / 本机隧道）。填地址后所有 <code class="mono">/api/*</code> 请求都发到那里，演示数据自动停用。</span></div>
+          <div class="row"><span class="k">说明</span><span class="v small">GitHub Pages 只有静态文件，必须连一个跑着本项目的后端（Render / 自建 VPS / 本机隧道）。填地址后所有 <code class="mono">/api/*</code> 请求都发到那里，演示数据自动停用。如果用自己域名部署，建议后端设 <code class="mono">ACCESS_KEY</code> 并在这里填同一个值，别人拿到地址也用不了。</span></div>
         </div>
       </div>
 

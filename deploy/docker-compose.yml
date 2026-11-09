@@ -1,0 +1,42 @@
+# 自建服务器部署：docker compose up -d --build
+# 只用 Caddy 对外 80/443，后端 8000 只在容器网络内可见，不暴露到公网。
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: neverattend:latest
+    container_name: neverattend-app
+    restart: unless-stopped
+    environment:
+      PORT: "8000"
+      STATIC_DIR: ./static
+      # 真实模式（走浙大体艺）；想看演示数据就改回 "1"
+      TYYS_MOCK: "0"
+      WATCH_INTERVAL_MS: "10000"
+      # 1 = 守护启动后自动提交；建议先设 0，观察几天再开
+      WATCH_AUTO_CHECKIN: "0"
+      # 公网必设：前端 Config 页要填同一个值
+      ACCESS_KEY: "换成你自己的随机串"
+      # 想让别人也用自己的后端，改这里；只自己用就留 GitHub Pages
+      CORS_ORIGIN: "https://richardhuke.github.io"
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: neverattend-caddy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

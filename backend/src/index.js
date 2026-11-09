@@ -9,16 +9,30 @@ import { pushEvent } from './store.js'
 const app = express()
 app.disable('x-powered-by')
 // GitHub Pages 等静态托管会从别的源来调接口，放开 CORS（本项目自己用，不设白名单）
+// 想锁定只允许某个前端来源时设 CORS_ORIGIN（默认回显请求来源）
+const CORS_ORIGIN = String(process.env.CORS_ORIGIN || '').trim()
+
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*')
+  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN || req.headers.origin || '*')
   res.setHeader('Vary', 'Origin')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Access-Key')
   res.setHeader('Access-Control-Max-Age', '600')
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
 app.use(express.json({ limit: '1mb' }))
+
+// 可选访问密钥：公网部署建议设置 ACCESS_KEY，除 /api/config（只读元信息）外都要带 X-Access-Key
+const ACCESS_KEY = String(process.env.ACCESS_KEY || '').trim()
+if (ACCESS_KEY) {
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/config') return next()
+    if (String(req.headers['x-access-key'] || '').trim() === ACCESS_KEY) return next()
+    res.status(401).json({ detail: '需要访问密钥：在 Config 页填 Access Key（后端环境变量 ACCESS_KEY）' })
+  })
+  console.log('[neverattend] ACCESS_KEY 已启用：/api/* 需要 X-Access-Key')
+}
 
 app.use('/api', apiRouter)
 

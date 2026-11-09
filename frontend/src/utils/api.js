@@ -2,6 +2,8 @@
 // 后端地址可以在运行时指定：GitHub Pages 这种纯静态托管把地址填上就能连自建后端。
 // 优先级：localStorage > 构建期 VITE_API_BASE > 同源 ./api
 const KEY = 'neverattend-api-base'
+// 后端设了 ACCESS_KEY 时，前端要带上同样的密钥才能调接口
+const AKEY = 'neverattend-access-key'
 
 // 也支持 ?api=https://backend 一次性带上（方便分享到手机直接打开）
 function fromQuery () {
@@ -20,6 +22,19 @@ export function getApiBase () {
   return String(v).trim().replace(/\/+$/, '')
 }
 
+export function getAccessKey () {
+  try {
+    const q = new URLSearchParams(location.search).get('key')
+    if (q) { setAccessKey(q); return q }
+  } catch {}
+  try { return localStorage.getItem(AKEY) || '' } catch { return '' }
+}
+
+export function setAccessKey (key) {
+  const v = String(key || '').trim()
+  try { v ? localStorage.setItem(AKEY, v) : localStorage.removeItem(AKEY) } catch {}
+}
+
 export function setApiBase (url) {
   const v = String(url || '').trim().replace(/\/+$/, '')
   try { v ? localStorage.setItem(KEY, v) : localStorage.removeItem(KEY) } catch {}
@@ -31,9 +46,13 @@ function base () {
 }
 
 async function request (path, { method = 'POST', body } = {}) {
+  const headers = {}
+  if (body) headers['Content-Type'] = 'application/json'
+  const akey = getAccessKey()
+  if (akey) headers['X-Access-Key'] = akey
   const res = await fetch(base() + path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined
   })
   const text = await res.text()
