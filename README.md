@@ -1,7 +1,7 @@
 # NeverAttend
 
 浙大体艺（tyys）「身体素质课考勤」自动签到 / 签退站点。结构、布局、交互对齐 [NeverRun](https://doomshriek.5dbwat4.top/neverrun-saas/#/)：
-Run / Manage / About 三个入口 + 隐藏的 Config 面板（右上角学号旁有「退出」，一键清空本机凭据），`#/` 哈希路由，卡片式单列 980px 布局；后端每 10 秒轮询一次场次，发现待签到 / 老师开了签退就自动提交（运行方式对齐本机 `ZJU-live-better`）。
+Run / Manage / About 三个入口 + 隐藏的 Config 面板（右上角学号旁有「退出」：清空本机凭据并调 `POST /api/logout` 删掉服务端会话，没有账号剩了就顺手停守护），`#/` 哈希路由，卡片式单列 980px 布局；后端每 10 秒轮询一次场次，发现待签到 / 老师开了签退就自动提交（运行方式对齐本机 `ZJU-live-better`）。
 
 [![Deploy demo to Pages](https://github.com/Richardhuke/neverattend/actions/workflows/pages.yml/badge.svg)](https://github.com/Richardhuke/neverattend/actions/workflows/pages.yml)
 ![license](https://img.shields.io/badge/license-MIT-blue)

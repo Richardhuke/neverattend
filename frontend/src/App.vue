@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from './stores/user.js'
+import { api } from './utils/api.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,9 +16,11 @@ const active = path => (path === '/' ? route.path === '/' : route.path.startsWit
 const initials = computed(() => (user.username ? user.username.slice(-4) : '----'))
 
 // 退出登录 = 清掉 localStorage 里的学号/token/密码密文，再回绑定页
-function logout () {
-  user.clear()
+async function logout () {
+  const username = user.username
+  user.clear()                       // 先清本机，界面立刻回到未接入
   router.replace('/first-time')
+  try { await api.logout(username) } catch { /* 纯静态演示没有后端，忽略 */ }
 }
 </script>
 

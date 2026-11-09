@@ -163,6 +163,19 @@ router.post('/checkin', async (req, res) => {
   }
 })
 
+/** 退出登录：删掉服务端会话（含凭据），没有账号了就顺手停守护 */
+router.post('/logout', (req, res) => {
+  const username = String((req.body || {}).username || '').trim()
+  const removed = username ? sessionStore.remove(username) : false
+  let stopped = false
+  if (!sessionStore.list().length && watcher.state().running) {
+    watcher.stop()
+    stopped = true
+  }
+  pushEvent('info', 'auth', `账号已退出：${username || '(未知)'}`, { username })
+  res.json({ ok: true, removed, stopped, remaining: sessionStore.list().length })
+})
+
 /** 自动签到守护状态 + 事件流（前端 8s 轮询） */
 router.get('/watch/state', (req, res) => {
   const since = Number(req.query.since || 0)

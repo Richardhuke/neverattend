@@ -24,6 +24,7 @@ export const api = {
   watchStart: (intervalMs, autoCheckin) => request('/watch/start', { body: { intervalMs, autoCheckin } }),
   watchStop: () => request('/watch/stop', { body: {} }),
   watchPoll: () => request('/watch/poll', { body: {} }),
+  logout: (username) => request('/logout', { body: { username } }),
   setCoords: (username, { mode = 'custom', longitude, latitude, jitter } = {}) =>
     request('/coords', { body: { username, mode, longitude, latitude, jitter } })
 }
