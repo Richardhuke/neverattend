@@ -4,10 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-const PORT = 9337
-const PROFILE = 'C:/Users/Richa/AppData/Local/Temp/na-cdp-bridge'
-const SITE = 'http://127.0.0.1:8088/'
-const BACKEND = 'http://127.0.0.1:8000'
+const PORT = 9338
+const PROFILE = 'C:/Users/Richa/AppData/Local/Temp/na-cdp-bridge-live'
+const SITE = "https://richardhuke.github.io/neverattend/"
+const BACKEND = "https://reservation-prime-keys-stops.trycloudflare.com"
 const shots = path.resolve('shots')
 
 const edge = spawn(EDGE, ['--headless=new', '--disable-gpu', '--hide-scrollbars',

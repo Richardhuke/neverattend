@@ -185,3 +185,19 @@ tick() 每 10s：
 ## License
 
 MIT
+
+## 让 GitHub Pages 那份也用真数据
+
+Pages 只托管静态文件，没有后端，所以默认跑浏览器内演示。要接真后端：
+
+1. 先把后端跑起来（本机或服务器都一样）：
+   ```bash
+   cd backend && TYYS_MOCK=0 WATCH_AUTO_CHECKIN=0 node src/index.js   # 监听 :8000
+   ```
+2. 把 :8000 暴露到公网，任选其一：
+   - **本机隧道（最快，关机即断）**：`cloudflared tunnel --url http://localhost:8000` → 得到 `https://xxx.trycloudflare.com`
+   - **Render**：仓库里的 `render.yaml` + `Dockerfile` 直接 Blueprint 部署 → 得到 `https://xxx.onrender.com`
+   - **自有 VPS**：`docker build -t neverattend . && docker run -p 8000:8000 -e TYYS_MOCK=0 neverattend`
+3. 打开 <https://richardhuke.github.io/neverattend/#/config>，在 **Backend** 卡里填第 2 步的地址 → 「测试连接」看到 `mode=live` → 「保存并重载」。
+
+保存后地址存在 `localStorage['neverattend-api-base']`，所有 `/api/*` 发往该后端，演示数据自动停用；`button` 清空输入框再保存即回到演示。后端已放开 CORS（回显 Origin、`OPTIONS` → 204），跨源可直接用。
