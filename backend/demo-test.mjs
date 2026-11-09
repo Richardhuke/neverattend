@@ -4,7 +4,7 @@ import fs from 'node:fs'
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 const PORT = 9334
-const URL = 'http://localhost:8088/'
+const URL = process.env.DEMO_URL || 'http://localhost:8088/'
 const OUT = '../shots'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
