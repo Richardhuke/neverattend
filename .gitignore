@@ -1,0 +1,8 @@
+node_modules/
+dist-demo/
+backend/static/
+backend/.env
+.env
+.DS_Store
+*.log
+.ai-memory/

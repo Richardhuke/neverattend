@@ -1,0 +1,17 @@
+# Render Blueprint：https://render.com/deploy?repo=https://github.com/Richardhuke/neverattend
+services:
+  - type: web
+    name: neverattend
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/config
+    autoDeploy: true
+    envVars:
+      - key: TYYS_MOCK
+        value: "1"
+      - key: WATCH_INTERVAL_MS
+        value: "10000"
+      - key: WATCH_AUTO_CHECKIN
+        value: "1"
