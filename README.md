@@ -85,6 +85,12 @@ docker run -d -p 8000:8000 -e TYYS_MOCK=1 --name neverattend neverattend
 
 前面套一层 nginx / Caddy 反代即可。注意 SSE 要关掉代理缓冲（nginx: `proxy_buffering off;`），否则 8 步时间轴会一次性喷出来。
 
+## 演示数据 vs 真实数据
+
+GitHub Pages 上的那份是**纯静态演示**：`frontend/src/demo/mock-api.js` 在浏览器内接管 `./api/*`，场次全部按“当前时间”现造——所以刷新一次时间就往后挪一分钟，永远有一条「待签到」、第 5 周永远「签退中」。页头黄色 chip 显示 `MOCK 模式`，下面还有一条橙色提示条。
+
+真实考勤只能在自托管后端上看到：`TYYS_MOCK=0` + 自己的 JWT（`POST /api/getToken`），数据来自 tyys 的 `attendanceList`，页头 chip 变成绿色的 `线上模式`。
+
 ## 页面
 
 | 路由 | 作用 |

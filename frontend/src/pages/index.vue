@@ -164,6 +164,16 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </div>
     </div>
 
+    <div v-if="mode === 'mock'" class="alert warn" style="border-color:#b45309">
+      <div>
+        <div class="a-title">当前是演示数据（MOCK），不是你的真实课表</div>
+        <div class="a-desc">
+          下面所有场次都是按<strong>当前时间现场生成的假数据</strong>：永远有一条「待签到」，第 5 周永远在「签退中」。
+          它们与浙大体艺毫无关系，不会真的提交任何签到。要看你自己的考勤，需要用自托管后端并设 <code>TYYS_MOCK=0</code>。
+        </div>
+      </div>
+    </div>
+
     <p v-if="signedCount > 0" class="muted small" style="margin:-6px 0 14px">
       You have signed <strong>{{ signedCount }}</strong> times this term.
     </p>
