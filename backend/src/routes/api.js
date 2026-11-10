@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { loginWithPassword, verifyToken, decodePassword, extractToken, ptmFetch } from '../services/zjuam.js'
+import { appLogin, probeToken, appFetch, APP_BASE } from '../services/appapi.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
 import { ptmStatus } from '../services/ptm.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
@@ -132,6 +133,64 @@ router.get('/debug/fetch', async (req, res) => {
     res.json({ url: page.url, status: page.status, location: page.location, bytes: page.html.length, file, html: page.html.slice(0, 400000) })
   } catch (err) {
     bad(res, 502, `抓取失败：${err?.message || String(err)}`)
+  }
+})
+
+// 调试：用已缓存的 CAS 会话换一张 App 票据，再拿 token 打 /app/mySignList 做凭据形态探测
+// 只读：不签到、不改任何服务器数据
+router.get('/debug/applogin', async (req, res) => {
+  const user = String(req.query.user || '').trim()
+  if (!user) return bad(res, 400, 'user 必填')
+  const rec = sessionStore.get(user)
+  if (!rec) return bad(res, 404, `账号 ${user} 尚未接入`)
+  try {
+    const login = await appLogin(user)
+    const probePath = String(req.query.path || '/app/mySignList')
+    const cred = { jar: login.jar, token: login.token }
+    const probe = await probeToken(cred, probePath)
+    const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, 'app-probe.json'),
+      JSON.stringify({ user, base: APP_BASE, location: login.location, hops: login.hops, probePath, probe }, null, 2),
+      'utf8'
+    )
+    pushEvent('info', 'app', `App 凭据探测：${probe.map(r => `${r.variant}=${r.status ?? r.error}`).join(' ')}`)
+    res.json({
+      base: APP_BASE,
+      location: login.location,
+      hops: login.hops,
+      status: login.status,
+      bodyLen: login.body.length,
+      body: login.body.slice(0, 2000),
+      token: login.token ? `${login.token.slice(0, 16)}…(${login.token.length})` : '',
+      jar: Array.isArray(login.jar) ? login.jar.map(c => `${c.name}@${c.domain}${c.path}`) : [],
+      probePath,
+      probe
+    })
+  } catch (err) {
+    bad(res, 502, `App 登录失败：${err?.message || String(err)}`)
+  }
+})
+
+// 调试：带 App token 打任意 /app/** 接口（GET，可选 POST body 字符串）
+router.get('/debug/appcall', async (req, res) => {
+  const user = String(req.query.user || '').trim()
+  const p = String(req.query.path || '').trim()
+  if (!user || !p) return bad(res, 400, 'user / path 必填')
+  const rec = sessionStore.get(user)
+  if (!rec) return bad(res, 404, `账号 ${user} 尚未接入`)
+  try {
+    const login = await appLogin(user)
+    const r = await appFetch({ jar: login.jar, token: login.token }, p, {
+      tokenHeader: String(req.query.h || 'token'),
+      method: req.query.method === 'POST' ? 'POST' : 'GET',
+      body: req.query.method === 'POST' ? String(req.query.body || '') : undefined,
+      contentType: req.query.method === 'POST' ? 'application/json;charset=UTF-8' : undefined
+    })
+    res.json({ path: p, status: r.status, location: r.location, bytes: r.body.length, body: r.body.slice(0, 4000) })
+  } catch (err) {
+    bad(res, 502, `App 调用失败：${err?.message || String(err)}`)
   }
 })
 

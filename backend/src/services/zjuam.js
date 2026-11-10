@@ -109,7 +109,7 @@ function parseSetCookie (line, url) {
   return { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), domain, hostOnly, path }
 }
 
-class Jar {
+export class Jar {
   items = []
 
   set (cookie) {
@@ -415,6 +415,24 @@ async function surveySubsystems (am, jar) {
   return { body: '', url: '', report }
 }
 
+/**
+ * CAS 会话缓存：ZJUAM 实例内部持有 TGC（CASTGC）jar，只要它活着就能免密换票。
+ * 手机 App 的登录入口（/cgapp-server/cas/appLogin）需要一次新的票据，
+ * 复用这个实例就不用再让用户输一次密码。
+ */
+const AM_CACHE = new Map()
+const AM_TTL = 12 * 60 * 60 * 1000
+
+export function cachedAm (username) {
+  const hit = AM_CACHE.get(String(username))
+  if (!hit) return null
+  if (Date.now() - hit.at > AM_TTL) {
+    AM_CACHE.delete(String(username))
+    return null
+  }
+  return hit.am
+}
+
 export async function loginWithPassword (username, plainPassword) {
   if (IS_MOCK()) {
     pushEvent('info', 'auth', `[mock] 使用模拟账号 ${username} 通过 ZJUAM 登录`)
@@ -424,6 +442,7 @@ export async function loginWithPassword (username, plainPassword) {
   const am = new ZJUAM(username, plainPassword)
   // 先建立 ZJUAM 会话（CASTGC），再沿 tyys 自己的跳转链走到底
   await am.login()
+  AM_CACHE.set(String(username), { am, at: Date.now() })
   const chain = await walkLoginChain(am)
   const hit = extractToken(chain.body)
   // 网页端（ptm/pft/cts）是 JSP + JSESSIONID，没有 token；只要进了门户就算接通
