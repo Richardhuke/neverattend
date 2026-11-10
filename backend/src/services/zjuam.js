@@ -201,7 +201,52 @@ async function walkLoginChain (am, maxHops = 14) {
     }
     url = next
   }
+  if (!extractToken(body)) {
+    pushEvent('info', 'auth', '登录链终点没有 token，改用同一会话探测 H5 入口')
+    const probe = await probeTokenPages(jar)
+    for (const line of probe.report) pushEvent('info', 'auth', `探测 ${line}`)
+    if (probe.body) return { body: probe.body, url: probe.url }
+    body = `${body}\n\n<!-- 探测报告 -->\n${probe.report.join('\n')}`
+  }
   return { body, url: landed }
+}
+
+/**
+ * 票据登录成功不等于拿到了 H5 首屏：/home 在部分账号上只回「没有权限」页。
+ * 这里拿同一个已认证会话，把可能的 H5 入口都试一遍，谁吐出 window.app.getUserName 就用谁。
+ */
+async function probeTokenPages (jar) {
+  const hosts = ['http://tyys.zju.edu.cn', 'http://www.tyys.zju.edu.cn']
+  const paths = [
+    '/cgapp-server/app/index.html',
+    '/cgapp-server/index.html',
+    '/cgapp-server/home',
+    '/cgapp-server/',
+    '/cgapp-server/toIndex',
+    '/cgapp-server/app/'
+  ]
+  const report = []
+  for (const host of hosts) {
+    for (const p of paths) {
+      const u = host + p
+      let res
+      try {
+        res = await hop(jar, u)
+      } catch (e) {
+        report.push(`${u} 请求失败 ${e?.message || e}`)
+        continue
+      }
+      if (res.status >= 300 && res.status < 400) {
+        report.push(`${u} ${res.status} → ${res.headers.get('location') || ''}`)
+        continue
+      }
+      const text = await res.text()
+      const hit = extractToken(text)
+      report.push(`${u} ${res.status} ${text.length} 字${hit ? ' HIT' : ''}`)
+      if (hit) return { body: text, url: u, report }
+    }
+  }
+  return { body: '', url: '', report }
 }
 
 export async function loginWithPassword (username, plainPassword) {

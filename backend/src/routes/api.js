@@ -93,6 +93,12 @@ router.get('/debug/login-html', (req, res) => {
   res.json({ file, bytes: Buffer.byteLength(text), html: text.slice(0, 400000) })
 })
 
+// 调试：最近事件（登录链每跳的日志都在这里，受 ACCESS_KEY 保护）
+router.get('/debug/events', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 200)
+  res.json({ events: listEvents(0, limit) })
+})
+
 router.post('/coords', (req, res) => {
   const { username, longitude, latitude, jitter, mode } = req.body || {}
   if (!username) return bad(res, 400, 'username 必填')
