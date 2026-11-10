@@ -1,0 +1,61 @@
+
+
+
+
+
+
+
+
+
+
+
+
+<body>
+<label style="display: none;" id="cancelAccount"></label>
+<label style="display: none;" id="login-error"></label>
+<label  id="ban_tips"></label>
+</body>
+<script type="text/javascript" src="/cgapp-server/assets/js/jquery.2.min.js"></script>
+<script type="text/javascript">
+
+	var isAndroid = false;
+	var isiOS = false;
+    var browser = {
+	  versions:function() {
+		var u=navigator.userAgent, app = navigator.appVersion;
+		return {//移动终端浏览器版本信息 
+		  trident: u.indexOf('Trident') > -1, //IE内核
+		  presto: u.indexOf('Presto') > -1, //opera内核
+		  webKit: u.indexOf('AppleWebKit') > -1, //苹果、谷歌内核
+		  gecko: u.indexOf('Gecko') > -1 && u.indexOf('KHTML') == -1, //火狐内核
+		  mobile: !!u.match(/AppleWebKit.*Mobile.*/) || !!u.match(/AppleWebKit/), //是否为移动终端
+		  ios: !!u.match(/\(i[^;]+;( U;)? CPU.+Mac OS X/), //ios终端
+		  android: u.indexOf('Android') > -1 || u.indexOf('Linux') > -1, //android终端或者uc浏览器
+		  iPhone: u.indexOf('iPhone') > -1 || u.indexOf('Mac') > -1, //是否为iPhone或者QQHD浏览器
+		  iPad: u.indexOf('iPad') > -1, //是否iPad
+		  webApp: u.indexOf('Safari') == -1 //是否web应该程序，没有头部与底部
+		};
+	  }(),
+        language: (navigator.browserLanguage || navigator.language).toLowerCase()
+    }
+
+    if (browser.versions.ios || browser.versions.iPhone || browser.versions.iPad) {
+        isiOS = true;
+    } else if (browser.versions.android) {
+        isAndroid = true;
+    }
+
+    $("#cancelAccount").hide();
+    $("#login-error").hide();
+    if ('' == '1') {
+        $("#cancelAccount").text("账号已注销");
+        $("#cancelAccount").show();
+    } else if('' == '1'){
+        $("#ban_tips").text("");
+    }else if (false) {
+        $("#login-error").text("");
+        $("#login-error").show();
+    } else {
+
+        if (isAndroid) {
+            window.app.getUserName('3260103483', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIzMjYwMTAzNDgzIiwic2Nob29sX2lkIjoiMSIsImV4cCI6MTc5NTE4MzMwOSwiaWF0IjoxNzk0MzE5MzA5LCJqdGkiOiI0ZjM1NWM0Zi04NzVkLTRhYWQtODNm

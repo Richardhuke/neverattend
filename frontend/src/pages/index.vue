@@ -22,6 +22,7 @@ const courses = ref([])
 const sessions = ref([])
 const signedCount = ref(0)
 const ptmSummary = ref(null)
+const phoneInfo = ref(null)
 const selected = ref('')
 const code = ref('')
 const autoCode = ref(false)
@@ -50,7 +51,7 @@ const canSubmit = computed(() => !!selected.value || openSessions.value.length >
 
 const statusText = { open: '待签到', signed: '已签到', closed: '未开始', absent: '缺勤', off: '停课' }
 const statusClass = { open: 'ok', signed: '', closed: '', absent: 'err', off: '' }
-const typeText = { location: '定位', qr: '扫码', code: '口令', manual: '手动', gps: 'GPS' }
+const typeText = { location: '定位', qr: '扫码', code: '口令', manual: '手动', gps: 'GPS', phone: '手机' }
 
 function fmt (v) {
   if (!v) return '—'
@@ -84,6 +85,7 @@ async function loadStatus () {
           offCount: data.offCount || 0
         }
       : null
+    phoneInfo.value = data.phone || null
     if (data.geo) geo.value = data.geo
     if (data.coords && data.coords.mode === 'custom') {
       awayMode.value = true
@@ -203,6 +205,16 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </div>
     </div>
 
+    <div v-if="phoneInfo" class="alert ok">
+      <div>
+        <div class="a-title">{{ phoneInfo.courseName || '身体素质课' }} · 手机上报</div>
+        <div class="a-desc">
+          最近签到 {{ phoneInfo.lastIn ? fmt(phoneInfo.lastIn.at) : '—' }} · 最近签退 {{ phoneInfo.lastOut ? fmt(phoneInfo.lastOut.at) : '—' }}<br>
+          身体素质课只能在「浙大体艺」App 里签到（网页门户没有入口，接口带原生签名）。手机上跑 autojs-ns.js，检测到「签到 / 签退」按钮会自动点击，点完回报到这里。
+        </div>
+      </div>
+    </div>
+
     <div v-if="watchState.running" class="alert ok">
       <div>
         <div class="a-title">自动签到 / 签退守护中</div>
@@ -246,8 +258,9 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
           <span class="chip" :class="statusClass[s.status]">{{ statusText[s.status] || s.status }}</span>
           <span v-if="s.signOutStatus === 'open'" class="chip ok">签退中</span>
           <span v-else-if="s.signOutStatus === 'done'" class="chip">已签退</span>
+          <span v-if="s.source === 'phone'" class="chip">手机端操作</span>
           <button
-            v-if="s.status === 'open'"
+            v-else-if="s.status === 'open'"
             class="btn sm primary"
             @click="selected = s.id; startRun('in')"
           >签到</button>

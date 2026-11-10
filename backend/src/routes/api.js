@@ -6,6 +6,7 @@ import { loginWithPassword, verifyToken, decodePassword, extractToken, ptmFetch 
 import { appLogin, probeToken, appFetch, APP_BASE } from '../services/appapi.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
 import { ptmStatus } from '../services/ptm.js'
+import { reportPhone, phoneStatus, phoneSessions } from '../services/phone.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
 import { watcher, tickOnce } from '../services/watcher.js'
 import { sessionStore, listEvents, pushEvent } from '../store.js'
@@ -218,6 +219,40 @@ router.get('/debug/appcall', async (req, res) => {
   }
 })
 
+/** 把「手机上报的身体素质课」并进任何一份考勤返回里，ptm 与手机两边互不覆盖 */
+function withPhone (status, username) {
+  const st = phoneStatus(username)
+  const sessions = Array.isArray(status.sessions) ? status.sessions : []
+  return {
+    ...status,
+    sessions,
+    openCount: sessions.filter((s) => s.status === 'open').length,
+    signedCount: sessions.filter((s) => s.status === 'signed').length,
+    phone: { courseName: st.courseName, lastIn: st.lastIn, lastOut: st.lastOut, events: st.events.slice(-10) }
+  }
+}
+
+/**
+ * 手机端上报：POST /api/phone/report
+ * body: { username, action: 'in'|'out', at?, note?, courseName? }
+ * 由 autojs-ns.js（无障碍脚本）在真正点到「签到/签退」之后调用。
+ */
+router.post('/phone/report', (req, res) => {
+  const { username, action, at, note, courseName } = req.body || {}
+  try {
+    const out = reportPhone(username, { action, at, note, courseName })
+    res.json(out)
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+router.get('/phone/status', (req, res) => {
+  const { username } = req.query
+  if (!username) return bad(res, 400, 'username 必填')
+  res.json(phoneStatus(username))
+})
+
 router.post('/coords', (req, res) => {
   const { username, longitude, latitude, jitter, mode } = req.body || {}
   if (!username) return bad(res, 400, 'username 必填')
@@ -247,19 +282,21 @@ router.get('/attendance/status', async (req, res) => {
   if (rec && Array.isArray(rec.jar) && rec.jar.length) {
     try {
       const status = await ptmStatus(rec)
-      return res.json({
+      const extra = phoneSessions(username)
+      return res.json(withPhone({
         ...status,
+        sessions: [...status.sessions, ...extra],
         geo: config.geo,
         coords: rec.coords || null
-      })
+      }, username))
     } catch (err) {
       pushEvent('warn', 'ptm', `取考勤页失败：${err?.message || err}`)
-      return res.json({
-        courses: [], sessions: [], openCount: 0, signedCount: 0,
+      return res.json(withPhone({
+        courses: [], sessions: phoneSessions(username), openCount: 0, signedCount: 0,
         signOutOpenCount: 0, signOutDoneCount: 0,
         note: `ptm 会话已接入，但考勤页读取失败：${err?.message || err}`,
         geo: config.geo, coords: rec.coords || null
-      })
+      }, username))
     }
   }
   try {
