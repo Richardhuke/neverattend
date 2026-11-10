@@ -31,6 +31,8 @@ async function tick () {
 
   for (const acc of accounts) {
     let sessions
+    // ptm 模式（网页端 JSP 会话）还没接上签到接口，先不轮询，免得每 10 秒报一次错
+    if (acc.mode === 'ptm' || (Array.isArray(acc.jar) && acc.jar.length)) continue
     try {
       sessions = await listSessions(acc.username, acc.token)
       watch.lastError = null

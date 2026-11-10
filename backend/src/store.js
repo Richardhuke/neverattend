@@ -6,7 +6,7 @@ import { config } from './config.js'
 const MAX_EVENTS = 200
 const DATA_FILE = path.join(config.dataDir, 'sessions.json')
 
-const PERSIST_FIELDS = ['username', 'xh', 'xm', 'xymc', 'token', 'tokenExp', 'createdAt', 'mock', 'coords']
+const PERSIST_FIELDS = ['username', 'xh', 'xm', 'xymc', 'token', 'tokenExp', 'createdAt', 'mock', 'coords', 'jar', 'mode']
 
 const sessions = new Map() // username -> { username, xh, xm, xymc, token, tokenExp, createdAt, mock, coords }
 const events = []

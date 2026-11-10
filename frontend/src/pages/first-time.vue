@@ -31,7 +31,10 @@ async function submitPassword () {
   try {
     const enc = await encode(form.password)
     const data = await api.getToken(form.username.trim(), enc)
-    const info = await api.verifyToken(data.username, data.token)
+    // ptm 模式：网页端是 JSP 会话（cookie），没有 JWT，不需要也不能再拿 token 去校验
+    const info = data.mode === 'ptm'
+      ? { xh: data.username, xm: '', xymc: '', token: data.token, mode: 'ptm' }
+      : await api.verifyToken(data.username, data.token)
     await user.savePassword(form.password)
     user.setCredentials(info.xh || data.username, info.token)
     me.value = info

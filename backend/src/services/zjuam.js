@@ -139,6 +139,50 @@ class Jar {
   }
 
   size () { return this.items.length }
+
+  /** 存进会话（sessions.json）用；cookie 本身就是凭据，等同 token 处理 */
+  dump () {
+    return this.items.map((c) => ({ ...c }))
+  }
+
+  static load (arr) {
+    const jar = new Jar()
+    for (const c of Array.isArray(arr) ? arr : []) {
+      if (c && c.name && c.value) jar.set({ ...c })
+    }
+    return jar
+  }
+}
+
+/**
+ * 用存档的 cookie 抓 ptm（教学管理）站的页面。
+ * 网页端是 JSP + JSESSIONID，不走 JWT；所以这里只需要 jar。
+ */
+export async function ptmFetch (jarDump, p, opts = {}) {
+  const jar = Jar.load(jarDump)
+  const url = /^https?:\/\//i.test(String(p))
+    ? String(p)
+    : `http://www.tyys.zju.edu.cn${String(p).startsWith('/') ? '' : '/'}${p}`
+  const headers = {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Upgrade-Insecure-Requests': '1',
+    Referer: 'http://www.tyys.zju.edu.cn/ptm/home'
+  }
+  const cookie = jar.header(url)
+  if (cookie) headers.Cookie = cookie
+  if (opts.contentType) headers['Content-Type'] = opts.contentType
+  const res = await fetch(url, {
+    method: opts.method || 'GET',
+    headers,
+    body: opts.body,
+    redirect: 'manual',
+    signal: AbortSignal.timeout(25000)
+  })
+  jar.absorb(res, url)
+  const text = await res.text()
+  return { status: res.status, location: res.headers.get('location') || '', html: text, url, jar: jar.dump() }
 }
 
 async function hop (jar, url) {
@@ -153,6 +197,14 @@ async function hop (jar, url) {
   const res = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(25000) })
   jar.absorb(res, url)
   return res
+}
+
+/** 是否是已登录的 ptm 门户（《体育教学管理系统》，含学生端菜单） */
+function isPtmPortal (html) {
+  const t = String(html || '')
+  if (t.length < 5000) return false
+  if (/没有权限|请先登录|用户登录/.test(t)) return false
+  return /体育教学管理系统/.test(t) && /\/ptm\/studentAttendance/.test(t)
 }
 
 async function walkLoginChain (am, maxHops = 14) {
@@ -203,13 +255,18 @@ async function walkLoginChain (am, maxHops = 14) {
     url = next
   }
   if (!extractToken(body)) {
-    pushEvent('info', 'auth', 'ptm 落地页没有 token（多半是 SPA 外壳）；改去其它子系统找学生端页面')
+    // ptm 是 JSP 站，本来就没有 JWT —— 落地页能进到 /ptm/home 就说明会话已建立
+    if (isPtmPortal(body)) {
+      pushEvent('success', 'auth', 'ptm 教学管理已登录（JSP 会话，不需要 token）')
+      return { body, url: landed, jar, mode: 'ptm' }
+    }
+    pushEvent('info', 'auth', 'ptm 落地页既没有 token 也不是门户页；改去其它子系统找学生端页面')
     const probe = await surveySubsystems(am, jar)
     for (const line of probe.report) pushEvent('info', 'auth', `子系统 ${line}`)
-    if (probe.body) return { body: probe.body, url: probe.url }
+    if (probe.body) return { body: probe.body, url: probe.url, jar }
     body = `${body}\n\n<!-- 子系统探测 -->\n${probe.report.join('\n')}`
   }
-  return { body, url: landed }
+  return { body, url: landed, jar }
 }
 
 /**
@@ -369,6 +426,20 @@ export async function loginWithPassword (username, plainPassword) {
   await am.login()
   const chain = await walkLoginChain(am)
   const hit = extractToken(chain.body)
+  // 网页端（ptm/pft/cts）是 JSP + JSESSIONID，没有 token；只要进了门户就算接通
+  if (!hit && chain.mode === 'ptm') {
+    const jarDump = chain.jar.dump()
+    pushEvent('success', 'auth', `ptm 会话已建立（cookie ${jarDump.length} 条），账号 ${username}`)
+    // 顺手把考勤页抓回来落盘，供后续分析真实结构（失败不影响登录）
+    try {
+      const page = await ptmFetch(jarDump, '/ptm/studentAttendance')
+      dumpNamed('ptm-attendance', page.url, page.html)
+      pushEvent('info', 'auth', `考勤页 ${page.status} ${page.html.length} 字，已落盘 logs/sub-ptm-attendance.html`)
+    } catch (e) {
+      pushEvent('warn', 'auth', `抓考勤页失败：${e?.message || e}`)
+    }
+    return { username, xh: username, token: `ptm:${username}`, jar: jarDump, mode: 'ptm' }
+  }
   if (!hit) {
     const saved = dumpHtml(`<!-- chain landed: ${chain.url} -->
 <!-- chain body: -->
@@ -378,7 +449,7 @@ ${chain.body}`)
   }
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
-  return { username: xh, token: hit.token, xh }
+  return { username: xh, token: hit.token, xh, jar: chain.jar ? chain.jar.dump() : null }
 }
 
 /**
@@ -425,4 +496,4 @@ export function mockToken (username) {
 }
 
 // 仅用于本地联调：验证跨域同名 JSESSIONID 不会被互相覆盖
-export const __test = { Jar, hop, walkLoginChain, surveySubsystems, titleOf, extractToken, harvestScripts }
+export const __test = { Jar, hop, walkLoginChain, surveySubsystems, titleOf, extractToken, harvestScripts, isPtmPortal, ptmFetch }

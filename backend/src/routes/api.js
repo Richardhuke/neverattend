@@ -2,8 +2,9 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
-import { loginWithPassword, verifyToken, decodePassword, extractToken } from '../services/zjuam.js'
+import { loginWithPassword, verifyToken, decodePassword, extractToken, ptmFetch } from '../services/zjuam.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
+import { ptmStatus } from '../services/ptm.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
 import { watcher, tickOnce } from '../services/watcher.js'
 import { sessionStore, listEvents, pushEvent } from '../store.js'
@@ -43,10 +44,12 @@ router.post('/getToken', async (req, res) => {
       token: me.token,
       tokenExp: Date.now() + 2 * 3600 * 1000,
       createdAt: Date.now(),
-      mock: isMock()
+      mock: isMock(),
+      jar: me.jar || null,
+      mode: me.mode || (me.jar ? 'ptm' : 'token')
     })
-    pushEvent('success', 'auth', `账号已接入：${me.xh || me.username}`)
-    res.json({ username: me.xh || me.username, token: me.token })
+    pushEvent('success', 'auth', `账号已接入：${me.xh || me.username}（${me.mode === 'ptm' ? 'ptm 会话' : 'token'}）`)
+    res.json({ username: me.xh || me.username, token: me.token, mode: me.mode || (me.jar ? 'ptm' : 'token') })
   } catch (err) {
     bad(res, 401, `CAS 登录失败：${err?.message || String(err)}`)
   }
@@ -67,14 +70,17 @@ router.post('/verifyToken', async (req, res) => {
   if (!username || !token) return bad(res, 400, 'username / token 必填')
   try {
     const me = await verifyToken(String(username), String(token))
+    // 保留已有的 ptm 会话 cookie，否则一次 verifyToken 就把 jar 抹掉
+    const prev = sessionStore.get(me.xh || String(username)) || {}
     sessionStore.save({
+      ...prev,
       username: me.xh || String(username),
       xh: me.xh,
       xm: me.xm,
       xymc: me.xymc,
       token: me.token,
       tokenExp: Date.now() + 2 * 3600 * 1000,
-      createdAt: Date.now(),
+      createdAt: prev.createdAt || Date.now(),
       mock: isMock()
     })
     pushEvent('success', 'auth', `token 已校验：${me.xh}`)
@@ -90,7 +96,7 @@ router.post('/verifyToken', async (req, res) => {
 router.get('/debug/login-html', (req, res) => {
   const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
   const want = String(req.query.file || 'last-login.html')
-  if (!/^(sub-[a-z0-9]+|last-login)\.html$/.test(want)) {
+  if (!/^(sub-[a-z0-9-]+|last-login)\.html$/.test(want)) {
     return res.status(400).json({ detail: '文件名只允许 last-login.html 或 sub-<name>.html' })
   }
   const file = path.join(dir, want)
@@ -103,6 +109,30 @@ router.get('/debug/login-html', (req, res) => {
 router.get('/debug/events', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 200)
   res.json({ events: listEvents(0, limit) })
+})
+
+// 调试：用某个已接入账号的 ptm 会话 GET 任意页面（只读，落盘后返回正文）
+// 网页端是 JSP + JSESSIONID，有了 jar 就等于有登录态，可以直接探查考勤/课锻的真实结构
+router.get('/debug/fetch', async (req, res) => {
+  const user = String(req.query.user || '').trim()
+  const p = String(req.query.path || '').trim()
+  if (!user || !p) return bad(res, 400, 'user / path 必填')
+  const rec = sessionStore.get(user)
+  if (!rec) return bad(res, 404, `账号 ${user} 尚未接入`)
+  if (!Array.isArray(rec.jar) || !rec.jar.length) return bad(res, 400, `账号 ${user} 没有 ptm 会话（jar 为空，先账密登录一次）`)
+  try {
+    const page = await ptmFetch(rec.jar, p)
+    if (page.jar && page.jar.length !== rec.jar.length) sessionStore.save({ ...rec, jar: page.jar })
+    const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
+    fs.mkdirSync(dir, { recursive: true })
+    const safe = p.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-40) || 'root'
+    const file = path.join(dir, `fetch-${safe}.html`)
+    fs.writeFileSync(file, page.html, 'utf8')
+    pushEvent('info', 'debug', `抓 ${p} → ${page.status}（${page.html.length} 字）`)
+    res.json({ url: page.url, status: page.status, location: page.location, bytes: page.html.length, file, html: page.html.slice(0, 400000) })
+  } catch (err) {
+    bad(res, 502, `抓取失败：${err?.message || String(err)}`)
+  }
 })
 
 router.post('/coords', (req, res) => {
@@ -129,6 +159,26 @@ router.post('/coords', (req, res) => {
 router.get('/attendance/status', async (req, res) => {
   const { username, token } = req.query
   if (!username || !token) return bad(res, 400, 'username / token 必填')
+  const rec = sessionStore.get(username)
+  // ptm 模式：网页端是 JSP 会话，没有 JWT，走 /ptm/* 抓页面（结构解析见 ptmStatus）
+  if (rec && Array.isArray(rec.jar) && rec.jar.length) {
+    try {
+      const status = await ptmStatus(rec)
+      return res.json({
+        ...status,
+        geo: config.geo,
+        coords: rec.coords || null
+      })
+    } catch (err) {
+      pushEvent('warn', 'ptm', `取考勤页失败：${err?.message || err}`)
+      return res.json({
+        courses: [], sessions: [], openCount: 0, signedCount: 0,
+        signOutOpenCount: 0, signOutDoneCount: 0,
+        note: `ptm 会话已接入，但考勤页读取失败：${err?.message || err}`,
+        geo: config.geo, coords: rec.coords || null
+      })
+    }
+  }
   try {
     const [courses, sessions] = await Promise.all([
       getCourses(username, token),
