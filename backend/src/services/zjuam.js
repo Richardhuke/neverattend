@@ -65,6 +65,51 @@ function dumpHtml (html) {
  * 账密模式：服务端走 ZJUAM CAS 登录 tyys，拿到 H5 首屏里内联下发的 JWT。
  * 与 NeverRun 的 api/getToken 等价。
  */
+
+/**
+ * loginSvc 有时只返回一段「落地地址文本」（例如
+ * http://www.tyys.zju.edu.cn/cgapp-server/cas/appLogin?ticket=ST-xxx ），
+ * 真正带 token 的页面要再请求一次。这里把它跟到底。
+ */
+async function resolveLanding (text, am) {
+  const raw = String(text || '').trim()
+  let target = ''
+  if (/^https?:\/\/\S+$/i.test(raw)) target = raw
+  else {
+    const rel = raw.match(/location(?:\.href)?\s*=\s*['"](https?:\/\/[^'"]+)['"]/i)
+      || raw.match(/['"](https?:\/\/[^'"]*[?&]ticket=[^'"]+)['"]/i)
+    if (rel) target = rel[1]
+  }
+  if (!target) return { body: raw, url: '' }
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
+  // 必须复用 login-zju 内部的 cookie jar：tyys 落地页靠 JSESSIONID 认会话，
+  // 裸 fetch 会丢 cookie，只能拿到 400 Invalid request。
+  const pick = (url) => (am && typeof am.fetch === 'function'
+    ? am.fetch(url, { redirect: 'follow' })
+    : fetch(url, { redirect: 'follow', headers: { 'User-Agent': UA } }))
+  try {
+    let url = target
+    let html = ''
+    // 落地页可能是 302 链，也可能是 meta refresh / JS 跳转，最多跟 4 跳
+    for (let hop = 0; hop < 4; hop += 1) {
+      const res = await pick(url)
+      html = await res.text()
+      url = res.url || url
+      pushEvent('info', 'auth', `落地页 hop${hop} ${res.status}（${html.length} 字节）：${url}`)
+      if (extractToken(html)) break
+      const refresh = html.match(/http-equiv=["']?refresh["']?[^>]*content=["'][^"']*url=([^"'>\s]+)/i)
+      const jsLoc = html.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i)
+      const next = (refresh && refresh[1]) || (jsLoc && jsLoc[1])
+      if (!next) break
+      try { url = new URL(next, url).toString() } catch { break }
+    }
+    return { body: html, url }
+  } catch (e) {
+    pushEvent('warn', 'auth', `跟随落地页失败：${e?.message || e}`)
+    return { body: raw, url: target }
+  }
+}
+
 export async function loginWithPassword (username, plainPassword) {
   if (IS_MOCK()) {
     pushEvent('info', 'auth', `[mock] 使用模拟账号 ${username} 通过 ZJUAM 登录`)
@@ -73,13 +118,17 @@ export async function loginWithPassword (username, plainPassword) {
   const { ZJUAM } = await import('login-zju')
   const am = new ZJUAM(username, plainPassword)
   const service = `${config.tyys.base}${config.tyys.endpoints.casLogin}`
-  const html = await am.loginSvc(service)
-  const hit = extractToken(html)
+  const first = await am.loginSvc(service)
+  const landing = await resolveLanding(first, am)
+  const hit = extractToken(landing.body) || extractToken(first)
   if (!hit) {
-    const saved = dumpHtml(html)
-    throw new Error(`CAS 登录成功，但未能在返回页面中提取 token（页面结构可能已变更）${saved ? `；首屏已存到 ${saved}` : ''}`)
+    const saved = dumpHtml(`<!-- landing url: ${landing.url} -->
+<!-- loginSvc: -->
+${first}
+<!-- landing body: -->
+${landing.body}`)
+    throw new Error(`CAS 登录成功，但未能在返回页面中提取 token（落地页 ${landing.url || '未知'}，${landing.body.length} 字节）${saved ? `；已存到 ${saved}` : ''}`)
   }
-  if (process.env.DUMP_HTML) dumpHtml(html)
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
   return { username: xh, token: hit.token, xh }
