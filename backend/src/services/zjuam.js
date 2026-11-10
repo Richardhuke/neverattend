@@ -76,36 +76,130 @@ function dumpHtml (html) {
  * 每一跳都可能下发新的 JSESSIONID（/ggtypt 与 /cgapp-server 各一套 Cookie 路径），
  * 所以必须 redirect:'manual' 逐跳走，让 login-zju 的 cookie jar 收齐；跟随后再取 body。
  */
-async function walkLoginChain (am, maxHops = 12) {
-  const origin = new URL(config.tyys.base).origin
-  let url = `${origin}/cgapp-server/loginto`
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0'
+
+/**
+ * 极简 cookie jar。必须按 (host, path, name) 存：整条链上 tyys.zju.edu.cn 和
+ * www.tyys.zju.edu.cn 会各下发一个同名 JSESSIONID（路径分别是 /cgapp-server 和 /ggtypt），
+ * 任何按「名字」去重的 jar 都会互相覆盖，导致最后访问 /cgapp-server/home 时带错会话，
+ * 服务端就回「对不起，您暂时没有权限访问此系统…-2」。
+ */
+function defaultPath (url) {
+  const p = new URL(url).pathname
+  const i = p.lastIndexOf('/')
+  return i <= 0 ? '/' : p.slice(0, i)
+}
+
+function parseSetCookie (line, url) {
+  const parts = String(line).split(';')
+  const pair = parts.shift() || ''
+  const eq = pair.indexOf('=')
+  if (eq < 0) return null
+  const host = new URL(url).hostname.toLowerCase()
+  let domain = host
+  let hostOnly = true
+  let path = defaultPath(url)
+  for (const attr of parts) {
+    const [k, ...rest] = attr.split('=')
+    const key = k.trim().toLowerCase()
+    const val = rest.join('=').trim()
+    if (key === 'domain' && val) { domain = val.replace(/^\./, '').toLowerCase(); hostOnly = false }
+    else if (key === 'path' && val) path = val
+  }
+  return { name: pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), domain, hostOnly, path }
+}
+
+class Jar {
+  items = []
+
+  set (cookie) {
+    this.items = this.items.filter((c) => !(c.name === cookie.name && c.domain === cookie.domain && c.path === cookie.path))
+    this.items.push(cookie)
+  }
+
+  absorb (res, url) {
+    let list = []
+    if (typeof res.headers.getSetCookie === 'function') list = res.headers.getSetCookie()
+    const single = res.headers.get('set-cookie')
+    if (!list.length && single) list = [single]
+    for (const line of list) {
+      const c = parseSetCookie(line, url)
+      if (c) this.set(c)
+    }
+  }
+
+  header (url) {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase()
+    return this.items
+      .filter((c) => (c.hostOnly ? host === c.domain : host === c.domain || host.endsWith(`.${c.domain}`)))
+      .filter((c) => u.pathname.startsWith(c.path) || c.path === '/')
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ')
+  }
+
+  size () { return this.items.length }
+}
+
+async function hop (jar, url) {
+  const headers = {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Upgrade-Insecure-Requests': '1'
+  }
+  const cookie = jar.header(url)
+  if (cookie) headers.Cookie = cookie
+  const res = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(25000) })
+  jar.absorb(res, url)
+  return res
+}
+
+async function walkLoginChain (am, maxHops = 14) {
+  // 整条链都走非 www 域：/cgapp-server 的会话 cookie 只落在 tyys.zju.edu.cn 上
+  const jar = new Jar()
+  let url = 'http://tyys.zju.edu.cn/cgapp-server/loginto'
   let body = ''
   let landed = url
-  for (let hop = 0; hop < maxHops; hop += 1) {
+  for (let hopNo = 0; hopNo < maxHops; hopNo += 1) {
     let res
     try {
-      res = await am.fetch(url, { redirect: 'manual' })
+      res = await hop(jar, url)
     } catch (e) {
-      pushEvent('warn', 'auth', `登录链 hop${hop} 请求失败：${e?.message || e}`)
+      pushEvent('warn', 'auth', `登录链 hop${hopNo} 请求失败：${e?.message || e}`)
       break
     }
     const text = await res.text()
     const loc = res.headers.get('location')
-    pushEvent('info', 'auth', `登录链 hop${hop} ${res.status}（${text.length} 字节）${loc ? ` → ${loc}` : ''}`)
+    pushEvent('info', 'auth', `登录链 hop${hopNo} ${res.status}（${text.length} 字节，cookie ${jar.size()}）${loc ? ` → ${loc}` : ''}`)
     landed = url
+    let next = ''
     if (res.status >= 300 && res.status < 400 && loc) {
-      url = new URL(loc, url).toString()
+      next = new URL(loc, url).toString()
+    } else {
+      body = text
+      if (extractToken(body)) break
+      const js = body.match(/location(?:\.href)?\s*=\s*['"](https?:\/\/[^'"]+)['"]/i)
+      if (res.status === 200 && js) next = js[1]
+    }
+    if (!next) break
+    // 到 CAS 了：不跟着页面里的 service 猜，直接用已登录的 CAS 会话换一张该 service 的 ticket
+    if (next.includes('zjuam.zju.edu.cn/cas/')) {
+      const svc = new URL(next).searchParams.get('service')
+      if (!svc) { pushEvent('warn', 'auth', 'CAS 跳转里没有 service 参数'); break }
+      let ticketUrl = ''
+      try {
+        ticketUrl = await am.loginSvc(svc)
+      } catch (e) {
+        pushEvent('warn', 'auth', `换 ticket 失败：${e?.message || JSON.stringify(e)}`)
+        break
+      }
+      if (!ticketUrl) { pushEvent('warn', 'auth', 'CAS 没返回带 ticket 的地址'); break }
+      pushEvent('info', 'auth', `CAS 已签发 → ${ticketUrl.replace(/ticket=[^&]+/, 'ticket=***')}`)
+      url = ticketUrl
       continue
     }
-    body = text
-    if (extractToken(body)) break
-    // 有些跳转是页面里的脚本，不是 302
-    const js = body.match(/location(?:\.href)?\s*=\s*['"](https?:\/\/[^'"]+)['"]/i)
-    if (res.status === 200 && js) {
-      url = js[1]
-      continue
-    }
-    break
+    url = next
   }
   return { body, url: landed }
 }
@@ -125,7 +219,10 @@ export async function loginWithPassword (username, plainPassword) {
     const saved = dumpHtml(`<!-- chain landed: ${chain.url} -->
 <!-- chain body: -->
 ${chain.body}`)
-    throw new Error(`CAS 登录成功，但登录链终点没有 token（落点 ${chain.url || '未知'}，${chain.body.length} 字节）${saved ? `；已存到 ${saved}` : ''}`)
+    const hint = /没有权限/.test(chain.body)
+      ? '（链尾是 cgapp 的「没有权限」页：这张票据对应的会话没被认成该子系统的用户，通常是 cookie 串了域）'
+      : ''
+    throw new Error(`CAS 登录成功，但登录链终点没有 token（落点 ${chain.url || '未知'}，${chain.body.length} 字节）${hint}${saved ? `；已存到 ${saved}` : ''}`)
   }
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
@@ -174,3 +271,6 @@ export function mockToken (username) {
   const payload = Buffer.from(JSON.stringify({ sub: username, iat: Date.now() })).toString('base64url')
   return `mock.${payload}.sig`
 }
+
+// 仅用于本地联调：验证跨域同名 JSESSIONID 不会被互相覆盖
+export const __test = { Jar, hop, walkLoginChain }
