@@ -21,6 +21,7 @@ const err = ref('')
 const courses = ref([])
 const sessions = ref([])
 const signedCount = ref(0)
+const ptmSummary = ref(null)
 const selected = ref('')
 const code = ref('')
 const autoCode = ref(false)
@@ -47,9 +48,9 @@ const openSessions = computed(() => sessions.value.filter(s => s.status === 'ope
 const selectedSession = computed(() => sessions.value.find(s => s.id === selected.value) || null)
 const canSubmit = computed(() => !!selected.value || openSessions.value.length > 0)
 
-const statusText = { open: '待签到', signed: '已签到', closed: '未开始', absent: '缺勤' }
-const statusClass = { open: 'ok', signed: '', closed: '', absent: 'err' }
-const typeText = { location: '定位', qr: '扫码', code: '口令' }
+const statusText = { open: '待签到', signed: '已签到', closed: '未开始', absent: '缺勤', off: '停课' }
+const statusClass = { open: 'ok', signed: '', closed: '', absent: 'err', off: '' }
+const typeText = { location: '定位', qr: '扫码', code: '口令', manual: '手动', gps: 'GPS' }
 
 function fmt (v) {
   if (!v) return '—'
@@ -74,6 +75,15 @@ async function loadStatus () {
       return new Date(a.startAt) - new Date(b.startAt)
     })
     signedCount.value = data.signedCount || 0
+    ptmSummary.value = data.mode === 'ptm'
+      ? {
+          term: data.term || '',
+          courseName: data.courseName || '',
+          stats: data.stats || null,
+          absentCount: data.absentCount || 0,
+          offCount: data.offCount || 0
+        }
+      : null
     if (data.geo) geo.value = data.geo
     if (data.coords && data.coords.mode === 'custom') {
       awayMode.value = true
@@ -177,6 +187,21 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <p v-if="signedCount > 0" class="muted small" style="margin:-6px 0 14px">
       You have signed <strong>{{ signedCount }}</strong> times this term.
     </p>
+
+    <div v-if="ptmSummary" class="alert ok">
+      <div>
+        <div class="a-title">
+          {{ ptmSummary.courseName || '体育课' }}<span v-if="ptmSummary.term"> · {{ ptmSummary.term }}</span>
+        </div>
+        <div class="a-desc">
+          应出勤 {{ ptmSummary.stats?.expected ?? 0 }} · 实出勤 {{ ptmSummary.stats?.actual ?? 0 }} ·
+          缺勤 {{ ptmSummary.stats?.absent ?? 0 }} · 迟到 {{ ptmSummary.stats?.late ?? 0 }} ·
+          病假 {{ ptmSummary.stats?.sick ?? 0 }} · 事假 {{ ptmSummary.stats?.personal ?? 0 }} ·
+          早退 {{ ptmSummary.stats?.early ?? 0 }} · 停课 {{ ptmSummary.offCount }}
+          <br>数据来自体艺网页端「我的考勤」（查询结果，不是实时状态）；网页端没有签到入口，签到由 App 或老师完成。
+        </div>
+      </div>
+    </div>
 
     <div v-if="watchState.running" class="alert ok">
       <div>
