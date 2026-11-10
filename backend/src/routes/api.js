@@ -14,6 +14,30 @@ const router = express.Router()
 
 const bad = (res, code, detail) => res.status(code).json({ detail })
 
+/**
+ * 版本指纹：用来一眼确认线上跑的是哪次构建。
+ * static/index.html 里的 `index-<hash>.js` 每次前端改动都会变，比任何时间戳都可靠。
+ */
+router.get('/version', (req, res) => {
+  const out = { ok: true, at: new Date().toISOString(), staticDir: config.staticDir, asset: null, buildAt: null, routes: [] }
+  try {
+    const html = fs.readFileSync(path.join(config.staticDir, 'index.html'), 'utf8')
+    const m = html.match(/assets\/(index-[A-Za-z0-9_-]+\.js)/)
+    out.asset = m ? m[1] : null
+    const f = path.join(config.staticDir, 'index.html')
+    out.buildAt = fs.statSync(f).mtime.toISOString()
+  } catch (err) {
+    out.ok = false
+    out.error = String(err.message || err)
+  }
+  // 这次构建带哪些调试路由，直接暴露出来，省得靠 404 反推
+  out.routes = router.stack
+    .map((l) => l.route && `${Object.keys(l.route.methods || {}).join(',').toUpperCase()} ${l.route.path}`)
+    .filter(Boolean)
+    .sort()
+  res.json(out)
+})
+
 /** 运行态 / 配置面板（对应 NeverRun 的 /config） */
 router.get('/config', (req, res) => {
   res.json({

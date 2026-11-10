@@ -141,7 +141,12 @@ $code = Invoke-Native -WorkDir $fe -Exe $npmCmd -Argv @('run','build') -LogName 
 if ($code -ne 0) { throw "前端构建失败（exit $code），完整日志：$logDir\build.log" }
 $staticIndex = Join-Path $be 'static\index.html'
 if (-not (Test-Path $staticIndex)) { throw "构建产物缺失：$staticIndex" }
-Ok '前端已构建 → backend\static'
+$assetName = 'unknown'
+try {
+  $idxHtml = Get-Content $staticIndex -Raw
+  if ($idxHtml -match 'assets/(index-[A-Za-z0-9_-]+\.js)') { $assetName = $Matches[1] }
+} catch {}
+Ok "前端已构建 → backend\static（产物 $assetName）"
 
 Install-Deps -Dir $be -Label '后端依赖' -LogName 'npm-backend.log'
 Ok '后端依赖就绪'
@@ -169,9 +174,14 @@ $lines = @(
 Set-Content -Path $runCmd -Value $lines -Encoding ASCII
 Ok "已写 $runCmd"
 
+# 先停任务再杀进程：只 /run 不 /end 的话，任务已在跑时 schtasks 会直接报「已在运行」，
+# 老进程继续服务旧代码，看起来就是「装了但没生效」。
+schtasks /end /tn NeverAttend 2>&1 | Out-Null
+Start-Sleep -Seconds 2
 Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 schtasks /create /tn NeverAttend /tr "`"$runCmd`"" /sc onstart /ru SYSTEM /rl HIGHEST /f | Out-Null
-schtasks /run /tn NeverAttend | Out-Null
+schtasks /run /tn NeverAttend 2>&1 | Out-Null
 Ok '计划任务 NeverAttend 已注册并启动（开机自启、SYSTEM 权限）'
 
 # ---------- 5. 防火墙 ----------
@@ -197,6 +207,17 @@ for ($i = 0; $i -lt 6 -and -not $localOk; $i++) {
     if ($i -lt 5) { Start-Sleep -Seconds 3 }
     else { Warn "本机 /api/config 请求失败：$($_.Exception.Message)（看日志 $logDir\app.log）" }
   }
+}
+
+# 版本指纹：/api/version 返回线上真实在跑的前端产物名 + 已注册路由，用来确认「装的是新代码」
+try {
+  $v = (Invoke-WebRequest "http://127.0.0.1:$Port/api/version" -UseBasicParsing -TimeoutSec 10).Content | ConvertFrom-Json
+  if ($v.asset) { Ok "线上版本：$($v.asset)（构建于 $($v.buildAt)）" } else { Warn '线上 /api/version 未返回产物名' }
+  $hasApp = @($v.routes) -match 'applogin'
+  if ($hasApp) { Ok '调试路由已就位：/api/debug/applogin、/api/debug/appcall' }
+  else { Warn '线上没有 /api/debug/applogin —— 说明跑的还是旧代码，需要重跑本脚本' }
+} catch {
+  Warn "本机 /api/version 请求失败（多半是旧版本没有这个路由，重跑脚本即可）：$($_.Exception.Message)"
 }
 
 $pubIp = ''
