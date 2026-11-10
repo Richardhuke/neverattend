@@ -18,7 +18,7 @@
 
 var CONFIG = {
   // 例：'https://fabric-ear-also-romantic.trycloudflare.com'
-  SERVER: 'http://121.196.174.13:8000',
+  SERVER: 'https://fabric-ear-also-romantic.trycloudflare.com',
   // NeverAttend 的访问钥（打开网页时 ?key= 后面那串）
   KEY: 'thgc8exk73v2wy9j4pbd',
   // 你的学号（和网页上绑定的那个一致）
