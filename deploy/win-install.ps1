@@ -5,17 +5,22 @@
 #   powershell -ExecutionPolicy Bypass -File $p
 #
 # 可用环境变量覆盖默认值（可选）：
-#   $env:NA_PORT=8000            # 监听端口
-#   $env:NA_ROOT='C:\neverattend' # 安装目录
-#   $env:NA_MOCK='0'             # 0=接真实浙大体艺，1=演示数据
-#   $env:NA_AUTO='0'             # 守护进程是否自动提交（1=是）
-#   $env:NA_ACCESS_KEY='xxxx'    # 访问密钥，留空则每次随机生成
+#   $env:NA_PORT=8000               # 监听端口
+#   $env:NA_ROOT='C:\neverattend'   # 安装目录
+#   $env:NA_MOCK='0'                # 0=接真实浙大体艺，1=演示数据
+#   $env:NA_AUTO='0'                # 守护进程是否自动提交（1=是）
+#   $env:NA_ACCESS_KEY='xxxx'       # 访问密钥，留空则每次随机生成
 #   $env:NA_REPO='Richardhuke/neverattend' ; $env:NA_BRANCH='main'
 #
-# 脚本做五件事：装 Node 22 → 拉源码 → 装依赖并构建前端 → 写 run.cmd + 开机自启计划任务 → 放行防火墙并自检。
+# 脚本做六件事：环境检查 → 装 Node → 拉源码 → 装依赖并构建前端 → 写 run.cmd + 开机自启 → 放行防火墙并自检。
+# 脚本是幂等的，失败后重跑即可（已装的 Node、已下的源码会复用）。
+#
+# v2 修复：调用外部命令时临时把 ErrorActionPreference 降为 Continue，输出统一写进日志文件再回显末几行。
+#         v1 因为 2>&1 把 npm 写到 stderr 的 warning（npm 11 的 install-scripts allowScripts 提示）
+#         变成 NativeCommandError，在 Stop 下一抛就中止，构建其实根本没跑起来。
 
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
+$ProgressPreference    = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
 $Root   = if ($env:NA_ROOT)  { $env:NA_ROOT }  else { 'C:\neverattend' }
@@ -26,9 +31,54 @@ $Mock   = if ($env:NA_MOCK)  { $env:NA_MOCK }  else { '0' }
 $Auto   = if ($env:NA_AUTO)  { $env:NA_AUTO }  else { '0' }
 $Key    = if ($env:NA_ACCESS_KEY) { $env:NA_ACCESS_KEY } else { -join ('23456789abcdefghjkmnpqrstuvwxyz'.ToCharArray() | Get-Random -Count 20) }
 
+$logDir = Join-Path $Root 'logs'
+
 function Step($t) { Write-Host "`n=== $t" -ForegroundColor Cyan }
 function Ok($t)   { Write-Host "  [OK] $t" -ForegroundColor Green }
 function Warn($t) { Write-Host "  [!]  $t" -ForegroundColor Yellow }
+
+# 在指定目录跑一条命令，输出全部落到日志文件，只回显末几行给屏幕。
+# 关键：命令用 cmd /c 执行并把 2>&1 重定向进文件，PowerShell 只看到退出码，
+# 不会把 npm 写到 stderr 的 warning 当成终止性错误。
+function Invoke-Native {
+  param(
+    [Parameter(Mandatory=$true)][string]$WorkDir,
+    [Parameter(Mandatory=$true)][string]$Exe,
+    [string[]]$Argv = @(),
+    [Parameter(Mandatory=$true)][string]$LogName,
+    [int]$TailLines = 8
+  )
+  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+  $log = Join-Path $logDir $LogName
+  if (Test-Path $log) { Remove-Item $log -Force -ErrorAction SilentlyContinue }
+  # 调用运算符 + 数组参数：路径含空格不用操心引号。
+  # 临时把 ErrorActionPreference 放回 Continue —— 否则 npm 写到 stderr 的 warning
+  # 经 2>&1 变成 ErrorRecord，在 Stop 下抛 NativeCommandError 直接中止（v1 就死在这）。
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  Push-Location $WorkDir
+  try {
+    & $Exe @Argv 2>&1 | Out-File -FilePath $log -Encoding utf8
+    $code = $LASTEXITCODE
+  } finally {
+    Pop-Location
+    $ErrorActionPreference = $prev
+  }
+  if (Test-Path $log) {
+    Get-Content $log -Tail $TailLines -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+  }
+  return [int]$code
+}
+
+function Install-Deps {
+  param([string]$Dir, [string]$Label, [string]$LogName)
+  $code = Invoke-Native -WorkDir $Dir -Exe $npmCmd -Argv @('ci','--no-audit','--no-fund') -LogName $LogName
+  if ($code -ne 0) {
+    Warn "$Label 首次失败（exit $code），改用国内镜像 registry.npmmirror.com 重试…"
+    $code = Invoke-Native -WorkDir $Dir -Exe $npmCmd -Argv @('ci','--no-audit','--no-fund','--registry=https://registry.npmmirror.com') -LogName ($LogName -replace '\.log$', '.retry.log')
+  }
+  if ($code -ne 0) { throw "$Label 失败（exit $code），完整日志在 $logDir" }
+}
 
 # ---------- 0. 前置检查 ----------
 Step '0/6 环境检查'
@@ -36,13 +86,14 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) { throw '请用「管理员身份」运行 PowerShell（开始菜单右键 → 终端(管理员)）' }
 Ok "管理员权限；系统 $([Environment]::OSVersion.VersionString)"
 if (Test-Path $Root) { Ok "安装目录已存在：$Root（将原地更新）" } else { New-Item -ItemType Directory -Path $Root -Force | Out-Null; Ok "已创建 $Root" }
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
-# ---------- 1. Node 22 LTS ----------
-Step '1/6 Node.js 22 LTS'
-$nodeExe = "$env:ProgramFiles\nodejs\node.exe"
-$npmCmd  = "$env:ProgramFiles\nodejs\npm.cmd"
+# ---------- 1. Node ----------
+Step '1/6 Node.js'
+$nodeExe = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+$npmCmd  = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 if (Test-Path $nodeExe) {
-  Ok "已安装：$(& $nodeExe -v)"
+  Ok "已安装：$(& $nodeExe -v)（$npmCmd）"
 } else {
   $idx = (Invoke-WebRequest 'https://nodejs.org/dist/latest-v22.x/' -UseBasicParsing -TimeoutSec 60).Content
   $msi = [regex]::Match($idx, 'node-v[\d.]+-x64\.msi').Value
@@ -51,10 +102,11 @@ if (Test-Path $nodeExe) {
   Warn "下载 $msi"
   Invoke-WebRequest "https://nodejs.org/dist/latest-v22.x/$msi" -OutFile $msiPath -UseBasicParsing -TimeoutSec 600
   Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait
-  if (-not (Test-Path $nodeExe)) { throw 'Node 安装后仍找不到 node.exe' }
-  $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+  if (-not (Test-Path $nodeExe)) { throw 'Node 安装后仍找不到 node.exe（可能刚装完 PATH 未刷新，重开 PowerShell 再跑一次）' }
   Ok "已安装：$(& $nodeExe -v)"
 }
+$nodeMajor = [int]((& $nodeExe -v).TrimStart('v').Split('.')[0])
+if ($nodeMajor -lt 20) { throw "Node 版本过低（v$nodeMajor），需要 20 以上" }
 
 # ---------- 2. 源码 ----------
 Step '2/6 拉取源码'
@@ -70,38 +122,35 @@ Ok "源码已就位：$Root（$Repo@$Branch）"
 
 # ---------- 3. 依赖与构建 ----------
 Step '3/6 安装依赖并构建前端（约 1-3 分钟）'
-Push-Location (Join-Path $Root 'frontend')
-& $npmCmd ci --no-audit --no-fund 2>&1 | Select-Object -Last 3
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw '前端依赖安装失败（npm ci）' }
-& $npmCmd run build 2>&1 | Select-Object -Last 6
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw '前端构建失败（npm run build）' }
-Pop-Location
-$staticIndex = Join-Path $Root 'backend\static\index.html'
-if (-not (Test-Path $staticIndex)) { throw "构建产物缺失：$staticIndex" }
-Ok "前端已构建 → backend\static"
+$fe = Join-Path $Root 'frontend'
+$be = Join-Path $Root 'backend'
 
-Push-Location (Join-Path $Root 'backend')
-& $npmCmd ci --no-audit --no-fund 2>&1 | Select-Object -Last 3
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw '后端依赖安装失败（npm ci）' }
-Pop-Location
+Install-Deps -Dir $fe -Label '前端依赖' -LogName 'npm-frontend.log'
+Ok '前端依赖就绪'
+
+$code = Invoke-Native -WorkDir $fe -Exe $npmCmd -Argv @('run','build') -LogName 'build.log' -TailLines 10
+if ($code -ne 0) { throw "前端构建失败（exit $code），完整日志：$logDir\build.log" }
+$staticIndex = Join-Path $be 'static\index.html'
+if (-not (Test-Path $staticIndex)) { throw "构建产物缺失：$staticIndex" }
+Ok '前端已构建 → backend\static'
+
+Install-Deps -Dir $be -Label '后端依赖' -LogName 'npm-backend.log'
 Ok '后端依赖就绪'
 
 # ---------- 4. 启动脚本 + 开机自启 ----------
 Step '4/6 生成 run.cmd 与开机自启'
-$logDir = Join-Path $Root 'logs'
-New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $runCmd = Join-Path $Root 'run.cmd'
 $lines = @(
   '@echo off',
   'chcp 65001 >nul',
-  "cd /d `"$Root\backend`"",
+  "cd /d `"$be`"",
   "set PORT=$Port",
-  "set STATIC_DIR=./static",
+  'set STATIC_DIR=./static',
   "set TYYS_MOCK=$Mock",
-  "set WATCH_INTERVAL_MS=10000",
+  'set WATCH_INTERVAL_MS=10000',
   "set WATCH_AUTO_CHECKIN=$Auto",
   "set ACCESS_KEY=$Key",
-  "set CORS_ORIGIN=https://richardhuke.github.io",
+  'set CORS_ORIGIN=https://richardhuke.github.io',
   ':loop',
   "`"$nodeExe`" src\index.js >> `"$logDir\app.log`" 2>&1",
   'timeout /t 5 /nobreak >nul',
@@ -124,14 +173,19 @@ Ok "已放行 TCP $Port（阿里云还需在「安全组」里再放行一次）
 
 # ---------- 6. 自检 ----------
 Step '6/6 自检'
-Start-Sleep -Seconds 6
+Start-Sleep -Seconds 8
 $localOk = $false
-try {
-  $r = Invoke-WebRequest "http://127.0.0.1:$Port/api/config" -UseBasicParsing -TimeoutSec 15
-  $cfg = $r.Content | ConvertFrom-Json
-  $localOk = ($r.StatusCode -eq 200)
-  Ok "本机 /api/config 200；模式=$($cfg.mode)；tyys=$($cfg.tyysBase)"
-} catch { Warn "本机 /api/config 请求失败：$($_.Exception.Message)（看日志 $logDir\app.log）" }
+for ($i = 0; $i -lt 6 -and -not $localOk; $i++) {
+  try {
+    $r = Invoke-WebRequest "http://127.0.0.1:$Port/api/config" -UseBasicParsing -TimeoutSec 10
+    $cfg = $r.Content | ConvertFrom-Json
+    $localOk = ($r.StatusCode -eq 200)
+    if ($localOk) { Ok "本机 /api/config 200；模式=$($cfg.mode)；tyys=$($cfg.tyysBase)" }
+  } catch {
+    if ($i -lt 5) { Start-Sleep -Seconds 3 }
+    else { Warn "本机 /api/config 请求失败：$($_.Exception.Message)（看日志 $logDir\app.log）" }
+  }
+}
 
 $pubIp = ''
 try { $pubIp = (Invoke-WebRequest 'http://100.100.100.200/latest/meta-data/eipv4' -UseBasicParsing -TimeoutSec 5).Content } catch {}
