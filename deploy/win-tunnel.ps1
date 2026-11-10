@@ -89,6 +89,28 @@ if (-not $pub) {
 }
 Ok "隧道已建立：$pub"
 
+# ---------- 4a. 校正访问钥：run.cmd 里的值可能与正在运行的进程不一致 ----------
+function Test-Key($k) {
+  if (-not $k) { return $false }
+  try {
+    $r = Invoke-WebRequest "http://127.0.0.1:$Port/api/attendance/status" -Method POST -Body '{"username":"_probe_","token":"x"}' -ContentType 'application/json' -Headers @{ 'X-Access-Key' = $k } -UseBasicParsing -TimeoutSec 8
+    return ([int]$r.StatusCode -ne 401)
+  } catch {
+    $resp = $_.Exception.Response
+    if ($resp) { return ([int]$resp.StatusCode -ne 401) }
+    return $false
+  }
+}
+if ($Key -and -not (Test-Key $Key)) {
+  Info '访问钥与运行中的进程不一致，重启计划任务 NeverAttend 后重试'
+  & schtasks /end /tn NeverAttend 2>&1 | Out-Null
+  Start-Sleep -Seconds 2
+  & schtasks /run /tn NeverAttend 2>&1 | Out-Null
+  Start-Sleep -Seconds 8
+  if (Test-Key $Key) { Ok '访问钥已与运行进程对齐' }
+  else { Bad '重启后仍对不上：改用不带 key 的地址（进程可能未设 ACCESS_KEY）'; $Key = '' }
+} elseif ($Key) { Ok '访问钥校验通过' }
+
 # ---------- 4. 自测并从服务器侧确认隧道可用 ----------
 $a = ''
 if ($Key) { $a = "?key=$Key" }
