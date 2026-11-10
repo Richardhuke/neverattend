@@ -8,8 +8,17 @@
  * 用法：
  *   node deploy/adb-ns.mjs --once            # 只扫一次（调试）
  *   node deploy/adb-ns.mjs                   # 常驻轮询
+ *   node deploy/adb-ns.mjs --plan            # 只走到课程排课并打印今天的计划，不点
  *   node deploy/adb-ns.mjs --dump            # 只打印当前界面上所有可点节点（定位按钮用）
  *   node deploy/adb-ns.mjs --shot out.png    # 截一张图
+ *
+ * 环境变量（都可不设）：
+ *   NA_DATE=2026-11-12     假装今天是这天（干跑用）
+ *   NA_TIME=17:12          假装现在是这个点（干跑用）
+ *   NA_START_FROM=17:00    动作时间窗起点，之前只 idle
+ *   NA_OUT_FROM=17:50      到这个点后改为点「签退」
+ *   NA_END_AT=18:20        时间窗终点，之后 idle
+ *   NA_COURSE=身体素质课    课程名
  *
  * 依赖：adb.exe（默认 C:\Users\Richa\adbdl\platform-tools\adb.exe，可用 --adb 覆盖）
  */
@@ -31,7 +40,10 @@ const CONFIG = {
   serial: process.env.NA_SERIAL || '',
   interval: Number(process.env.NA_INTERVAL || 8000),
   cooldown: Number(process.env.NA_COOLDOWN || 90000),
-  courseName: process.env.NA_COURSE || '身体素质课'
+  courseName: process.env.NA_COURSE || '身体素质课',
+  outFrom: process.env.NA_OUT_FROM || '17:50',
+  startFrom: process.env.NA_START_FROM || '17:00',
+  endAt: process.env.NA_END_AT || '18:20'
 }
 
 const argv = process.argv.slice(2)
@@ -101,17 +113,103 @@ async function launchApp () {
   }
 }
 
-/* 在列表页点进「身体素质课」，让考勤页露出来 */
-async function openCourse (nodes) {
+/* ---------- 导航：首页 → 身体素质课考勤 → 课程列表 → 课程排课 ---------- */
+
+/* 文本归一化：去掉 uiautomator 的 &#10; 换行实体与所有空白 */
+function norm (t) {
+  return String(t || '').replace(/&#10;|&#13;|\n/g, '').replace(/[\s　]+/g, '')
+}
+
+function tapAt (n, label) {
+  console.log(`[nav] 点「${label}」 @ (${n.x},${n.y})`)
+  return adb(['shell', 'input', 'tap', String(n.x), String(n.y)])
+}
+
+function findByText (nodes, keyword, { minW = 0, minH = 0, exact = false } = {}) {
   const hit = nodes.find((n) => {
-    const t = (n.text || '') + (n.desc || '')
-    return t.includes(CONFIG.courseName) && n.w > 120 && n.h > 40
+    const t = norm((n.text || '') + (n.desc || ''))
+    if (exact ? t === keyword : !t.includes(keyword)) return false
+    return n.w >= minW && n.h >= minH
   })
-  if (!hit) return false
-  console.log(`[nav] 点「${CONFIG.courseName}」 @ (${hit.x},${hit.y})`)
-  await adb(['shell', 'input', 'tap', String(hit.x), String(hit.y)])
-  await sleep(2000)
-  return true
+  return hit || null
+}
+
+/* 判断当前在哪一页 */
+function pageOf (nodes) {
+  const t = norm(nodes.map((n) => (n.text || '') + (n.desc || '')).join('\n'))
+  if (/课程排课/.test(t) && /第\d+次课/.test(t)) return 'schedule'
+  if (/我的记录/.test(t)) return 'record'
+  if (/课程列表/.test(t) && t.includes(CONFIG.courseName)) return 'list'
+  if (t.includes(`${CONFIG.courseName}考勤`) || /修学记录/.test(t)) return 'home'
+  return 'other'
+}
+
+/* 把界面推进到「课程排课」，返回最后的节点表 */
+async function gotoSchedule (nodes) {
+  for (let step = 0; step < 6; step++) {
+    const page = pageOf(nodes)
+    if (page === 'schedule') return nodes
+    if (page === 'record') {
+      const tab = findByText(nodes, '课程排课', { minW: 80 })
+      if (tab) {
+        await tapAt(tab, '课程排课 tab')
+      } else {
+        console.log('[nav] 在「我的记录」页，返回上一层')
+        await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+      }
+      await sleep(1800)
+      nodes = parseNodes(await dumpUi())
+      continue
+    } else if (page === 'list') {
+      const row = findByText(nodes, CONFIG.courseName, { minW: 400 })
+      if (row) { await tapAt(row, CONFIG.courseName); await sleep(2000); nodes = parseNodes(await dumpUi()); continue }
+    } else if (page === 'home') {
+      const entry = findByText(nodes, `${CONFIG.courseName}考勤`, { minW: 80 })
+      if (entry) { await tapAt(entry, `${CONFIG.courseName}考勤`); await sleep(2500); nodes = parseNodes(await dumpUi()); continue }
+    }
+    // 兜底：退一层再看（最多 3 次，避免退到桌面）
+    if (step < 3) {
+      console.log(`[nav] 认不出页面（${page}），退一层`)
+      await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+      await sleep(1500)
+      nodes = parseNodes(await dumpUi())
+      continue
+    }
+    break
+  }
+  return nodes
+}
+
+/* 从「第N次课 YYYY-MM-DD」里挑今天的课次 */
+const ROW_RE = /第(\d+)次课(\d{4}-\d{2}-\d{2})/
+
+function todayStr () {
+  if (process.env.NA_DATE) return process.env.NA_DATE
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+function findTodayRow (nodes) {
+  const today = todayStr()
+  for (const n of nodes) {
+    const t = norm(n.text)
+    const m = t.match(ROW_RE)
+    if (m && m[2] === today) return { no: Number(m[1]), date: m[2], y: n.y, node: n }
+  }
+  return null
+}
+
+/* 取同一行上的「签到」/「签退」按钮 */
+function rowButton (nodes, row, keyword) {
+  const cands = nodes.filter((n) => {
+    const t = norm((n.text || '') + (n.desc || ''))
+    return t === keyword && n.w > 40 && n.h > 20 && Math.abs(n.y - row.y) <= 70
+  })
+  if (!cands.length) return null
+  // 同一按钮常有 desc 与 text 两个节点，取可点击的
+  cands.sort((a, b) => Number(b.clickable) - Number(a.clickable))
+  return cands[0]
 }
 
 async function focusedPackage () {
@@ -210,7 +308,46 @@ async function report (action, note) {
 
 const lastFired = { in: 0, out: 0 }
 
-async function tick () {
+/* 这节课该签到还是签退：下课时间（默认 17:50）之后算签退 */
+function pickAction () {
+  const m = String(CONFIG.outFrom).match(/^(\d{1,2}):(\d{2})$/)
+  if (!m) return 'in'
+  const cut = Number(m[1]) * 60 + Number(m[2])
+  return curMinutes() >= cut ? 'out' : 'in'
+}
+
+function curMinutes () {
+  const o = String(process.env.NA_TIME || '').match(/^(\d{1,2}):(\d{2})$/)
+  if (o) return Number(o[1]) * 60 + Number(o[2])
+  const d = new Date()
+  return d.getHours() * 60 + d.getMinutes()
+}
+
+function hhmm (t) {
+  const m = String(t).match(/^(\d{1,2}):(\d{2})$/)
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null
+}
+
+function clockStr () {
+  const c = curMinutes()
+  return String(Math.floor(c / 60)).padStart(2, '0') + ':' + String(c % 60).padStart(2, '0')
+}
+
+/* 只在课次时间窗内动作，避免全天乱点 */
+function inWindow () {
+  const a = hhmm(CONFIG.startFrom)
+  const b = hhmm(CONFIG.endAt)
+  const cur = curMinutes()
+  if (a === null || b === null) return true
+  return cur >= a && cur <= b
+}
+
+function textsOf (nodes) {
+  return nodes.map((n) => (n.text || '') + (n.desc || '')).join(' | ')
+}
+
+async function tick (opts = {}) {
+  const dry = !!opts.dry
   await wake()
   let pkg = await focusedPackage()
   if (!pkg.includes(APP_PKG)) {
@@ -227,40 +364,59 @@ async function tick () {
     }
   }
 
-  let nodes = parseNodes(await dumpUi())
-
-  // 考勤页没露出来（列表页）就先点进课程
-  if (!findButton(nodes, '签到') && !findButton(nodes, '签退')) {
-    if (await openCourse(nodes)) nodes = parseNodes(await dumpUi())
-  }
-
-  // 先签退（老师下课后才出现），再签到
-  for (const [keyword, action] of [['签退', 'out'], ['签到', 'in']]) {
-    const btn = findButton(nodes, keyword)
-    if (!btn) continue
-    if (Date.now() - lastFired[action] < CONFIG.cooldown) {
-      console.log(`[cool] ${keyword} 距上次 ${Math.round((Date.now() - lastFired[action]) / 1000)}s，跳过`)
-      continue
-    }
-    console.log(`[tap] ${keyword} @ (${btn.x},${btn.y}) text="${btn.text || btn.desc}"`)
-    await adb(['shell', 'input', 'tap', String(btn.x), String(btn.y)])
-    await sleep(2500)
-
-    const after = parseNodes(await dumpUi())
-    const stillThere = findButton(after, keyword)
-    const okText = after.some((n) => /(成功|已签|签到成功|签退成功)/.test((n.text || '') + (n.desc || '')))
-    lastFired[action] = Date.now()
-
-    if (okText || !stillThere) {
-      await report(action, `adb 点击「${keyword}」`)
-    } else {
-      console.log(`[warn] 点了「${keyword}」但界面没变化，不回报`)
-    }
+  let nodes = await gotoSchedule(parseNodes(await dumpUi()))
+  const page = pageOf(nodes)
+  if (page !== 'schedule') {
+    console.log(`[skip] 没走到「课程排课」页（当前 ${page}）`)
     return
   }
 
-  const pending = nodes.filter((n) => /签到|签退/.test((n.text || '') + (n.desc || ''))).map((n) => n.text || n.desc)
-  console.log(`[idle] 界面上没有可点的签到/签退${pending.length ? `（候选：${pending.slice(0, 5).join(' | ')}）` : ''}`)
+  const row = findTodayRow(nodes)
+  if (!row) {
+    console.log(`[idle] 今天（${todayStr()}）没有课次`)
+    return
+  }
+
+  if (!inWindow()) {
+    console.log(`[idle] 现在 ${clockStr()}，不在动作时间窗 ${CONFIG.startFrom}-${CONFIG.endAt}`)
+    return
+  }
+
+  const action = pickAction()
+  const keyword = action === 'out' ? '签退' : '签到'
+  const btn = rowButton(nodes, row, keyword)
+  if (!btn) {
+    console.log(`[idle] 第${row.no}次课 没有「${keyword}」按钮（可能老师还没开场或已结束）`)
+    return
+  }
+  if (Date.now() - lastFired[action] < CONFIG.cooldown) {
+    console.log(`[cool] ${keyword} 距上次 ${Math.round((Date.now() - lastFired[action]) / 1000)}s，跳过`)
+    return
+  }
+
+  if (dry) {
+    console.log(`[plan] 第${row.no}次课（${row.date}）→ 点「${keyword}」@ (${btn.x},${btn.y})`)
+    return
+  }
+
+  console.log(`[tap] 第${row.no}次课「${keyword}」@ (${btn.x},${btn.y})`)
+  await tapAt(btn, `${row.no} ${keyword}`)
+  await sleep(3000)
+
+  const after = parseNodes(await dumpUi())
+  const all = textsOf(after)
+  const ok = /(成功|已签到|已签退|签到完成|签退完成)/.test(all)
+  const bad = all.match(/(失败|不在|未到|范围|超出|过期|超时|未开始|已结束|不能|无法)[^|]{0,24}/)
+  lastFired[action] = Date.now()
+
+  if (ok) {
+    console.log(`[ok] ${keyword} 成功`)
+    await report(action, `adb 第${row.no}次课 ${keyword} 成功`)
+  } else if (bad) {
+    console.log(`[warn] ${keyword} 被拒：${bad[0]}`)
+  } else {
+    console.log(`[warn] 点了「${keyword}」但界面无成功提示，不回报。界面片段：${all.slice(0, 180)}`)
+  }
 }
 
 async function main () {
@@ -284,6 +440,11 @@ async function main () {
     })
     await writeFile(p, stdout)
     console.log(`[shot] ${p} (${stdout.length} 字节)`)
+    return
+  }
+
+  if (has('--plan')) {
+    await tick({ dry: true })
     return
   }
 
