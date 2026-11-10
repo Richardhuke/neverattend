@@ -202,49 +202,104 @@ async function walkLoginChain (am, maxHops = 14) {
     url = next
   }
   if (!extractToken(body)) {
-    pushEvent('info', 'auth', '登录链终点没有 token，改用同一会话探测 H5 入口')
-    const probe = await probeTokenPages(jar)
-    for (const line of probe.report) pushEvent('info', 'auth', `探测 ${line}`)
+    pushEvent('info', 'auth', 'cgapp-server 是 APP 管理后台，学生账号无权限；改去其它子系统找学生端页面')
+    const probe = await surveySubsystems(am, jar)
+    for (const line of probe.report) pushEvent('info', 'auth', `子系统 ${line}`)
     if (probe.body) return { body: probe.body, url: probe.url }
-    body = `${body}\n\n<!-- 探测报告 -->\n${probe.report.join('\n')}`
+    body = `${body}\n\n<!-- 子系统探测 -->\n${probe.report.join('\n')}`
   }
   return { body, url: landed }
 }
 
 /**
- * 票据登录成功不等于拿到了 H5 首屏：/home 在部分账号上只回「没有权限」页。
- * 这里拿同一个已认证会话，把可能的 H5 入口都试一遍，谁吐出 window.app.getUserName 就用谁。
+ * tyys 是「公共体育立体化信息平台」，学生端和教师端分成多个子系统：
+ *   /cgapp-server   APP 管理平台（后台，学生账号进去只有「没有权限 -2」）
+ *   /ptm            教学管理（课程 / 考勤）
+ *   /pft            体质测试
+ *   /cts            竞赛训练
+ *   /gms            群体管理
+ * 签到 H5 不一定落在 cgapp 上，所以拿同一张 CAS 会话给每个子系统各要一张票据，
+ * 跟着跳到落地页，谁吐出 window.app.getUserName 就认为找到了学生端页面。
  */
-async function probeTokenPages (jar) {
-  const hosts = ['http://tyys.zju.edu.cn', 'http://www.tyys.zju.edu.cn']
-  const paths = [
-    '/cgapp-server/app/index.html',
-    '/cgapp-server/index.html',
-    '/cgapp-server/home',
-    '/cgapp-server/',
-    '/cgapp-server/toIndex',
-    '/cgapp-server/app/'
-  ]
+const SUB_SYSTEMS = [
+  ['ptm', 'http://www.tyys.zju.edu.cn/ptm/loginto'],
+  ['pft', 'http://tyys.zju.edu.cn/pft/loginto'],
+  ['cts', 'http://tyys.zju.edu.cn/cts/loginto'],
+  ['gms', 'http://tyys.zju.edu.cn/gms/loginto']
+]
+
+function titleOf (html) {
+  const m = html.match(/<title>([^<]{0,80})<\/title>/i)
+  return m ? m[1].trim() : ''
+}
+
+/** 落盘某个子系统的落地页，便于事后用 /api/debug/login-html?file=sub-xxx.html 取回分析 */
+function dumpNamed (name, url, html) {
+  const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
+  const target = path.join(dir, `sub-${name}.html`)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(target, `<!-- ${name} landed: ${url} -->\n${String(html)}`)
+    return target
+  } catch (e) {
+    pushEvent('warn', 'auth', `子系统页面落盘失败（${name}）：${e?.message || e}`)
+    return ''
+  }
+}
+
+async function surveySubsystems (am, jar) {
   const report = []
-  for (const host of hosts) {
-    for (const p of paths) {
-      const u = host + p
+  for (const [name, svc] of SUB_SYSTEMS) {
+    let ticketUrl = ''
+    try {
+      ticketUrl = await am.loginSvc(svc)
+    } catch (e) {
+      report.push(`${name} 换票失败：${e?.message || e}`)
+      continue
+    }
+    if (!ticketUrl) {
+      report.push(`${name} CAS 没给票据`)
+      continue
+    }
+    let url = ticketUrl
+    let page = ''
+    let landed = ''
+    for (let i = 0; i < 6 && url; i += 1) {
       let res
       try {
-        res = await hop(jar, u)
+        res = await hop(jar, url)
       } catch (e) {
-        report.push(`${u} 请求失败 ${e?.message || e}`)
+        report.push(`${name} 请求失败：${e?.message || e}`)
+        break
+      }
+      const loc = res.headers.get('location')
+      if (res.status >= 300 && res.status < 400 && loc) {
+        url = new URL(loc, url).toString()
         continue
       }
-      if (res.status >= 300 && res.status < 400) {
-        report.push(`${u} ${res.status} → ${res.headers.get('location') || ''}`)
-        continue
+      page = await res.text()
+      landed = url
+      // 有些子系统落地页是 200 + JS 跳转（ggtypt 就是），没 token 就跟着脚本再走一跳；
+      // 只跟「瘦跳转页」，避免把正经页面里的条件跳转脚本（如 CAS 登录页）误当跳转
+      if (!extractToken(page) && page.length < 2000) {
+        const jsLoc = page.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i)
+        if (jsLoc) {
+          url = new URL(jsLoc[1], url).toString()
+          continue
+        }
       }
-      const text = await res.text()
-      const hit = extractToken(text)
-      report.push(`${u} ${res.status} ${text.length} 字${hit ? ' HIT' : ''}`)
-      if (hit) return { body: text, url: u, report }
+      break
     }
+    if (!page) {
+      report.push(`${name} 没落地（最后在 ${url || '空地址'}）`)
+      continue
+    }
+    const hit = extractToken(page)
+    const t = titleOf(page)
+    report.push(`${name} ${page.length} 字${t ? `《${t}》` : ''}${hit ? ' HIT' : ''} @ ${landed}`)
+    if (hit) return { body: page, url: landed, report }
+    const saved = dumpNamed(name, landed, page)
+    if (saved) report.push(`${name} 已落盘 ${saved}`)
   }
   return { body: '', url: '', report }
 }
@@ -264,10 +319,8 @@ export async function loginWithPassword (username, plainPassword) {
     const saved = dumpHtml(`<!-- chain landed: ${chain.url} -->
 <!-- chain body: -->
 ${chain.body}`)
-    const hint = /没有权限/.test(chain.body)
-      ? '（链尾是 cgapp 的「没有权限」页：这张票据对应的会话没被认成该子系统的用户，通常是 cookie 串了域）'
-      : ''
-    throw new Error(`CAS 登录成功，但登录链终点没有 token（落点 ${chain.url || '未知'}，${chain.body.length} 字节）${hint}${saved ? `；已存到 ${saved}` : ''}`)
+    const hint = /没有权限/.test(chain.body) ? '（cgapp 回了「没有权限」：它是 APP 管理后台，学生账号本来不从这里进）' : ''
+    throw new Error(`CAS 登录成功（票据有效），但 ptm/pft/cts/gms 四个子系统落地页都没找到 token；末次落点 ${chain.url || '未知'}（${chain.body.length} 字）${hint}。探测明细见 /api/debug/events，各子系统页面已存 logs/sub-*.html${saved ? `，末页 ${saved}` : ''}`)
   }
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
@@ -318,4 +371,4 @@ export function mockToken (username) {
 }
 
 // 仅用于本地联调：验证跨域同名 JSESSIONID 不会被互相覆盖
-export const __test = { Jar, hop, walkLoginChain }
+export const __test = { Jar, hop, walkLoginChain, surveySubsystems, titleOf, extractToken }

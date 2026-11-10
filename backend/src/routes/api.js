@@ -86,8 +86,14 @@ router.post('/verifyToken', async (req, res) => {
 
 /** 异地模式：登记该账号使用的坐标（含抖动半径），守护进程会复用 */
 // 调试：取回上一次登录失败时落盘的 tyys 首屏 HTML（只读，受 ACCESS_KEY 保护）
+// ?file=sub-ptm.html 可取子系统落地页；只允许白名单文件名，不能读任意路径
 router.get('/debug/login-html', (req, res) => {
-  const file = process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html')
+  const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
+  const want = String(req.query.file || 'last-login.html')
+  if (!/^(sub-[a-z0-9]+|last-login)\.html$/.test(want)) {
+    return res.status(400).json({ detail: '文件名只允许 last-login.html 或 sub-<name>.html' })
+  }
+  const file = path.join(dir, want)
   if (!fs.existsSync(file)) return res.status(404).json({ detail: `还没有落盘文件：${file}` })
   const text = fs.readFileSync(file, 'utf8')
   res.json({ file, bytes: Buffer.byteLength(text), html: text.slice(0, 400000) })
