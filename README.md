@@ -352,3 +352,56 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<默认域名>/api/attendance/s
 | 出网到浙大 | 腾讯云广州/上海节点，通常可达；仍需实测 | 取决于机房 |
 | 会话 | 同样存内存，实例重启要重绑 | 同 |
 
+
+## 阿里云 ECS（Windows Server）→ `http://公网IP:8000/`
+
+手上已经有一台 Windows 的云服务器时，这条路最短：**不买域名、不备案、不装证书**，直接用 `IP:端口` 打开整站（页面和 API 同源，所以没有混合内容问题；手机也能开）。
+
+### 两步部署
+
+1. **安全组放行**（阿里云控制台 → 该实例 → 网络与安全组 → 安全组 → 配置规则 → 入方向 → 手动添加）：
+   - 端口范围 `8000/8000`，授权对象 `0.0.0.0/0`，协议 TCP。
+   - 需要 RDP 的话再加 `3389/3389`，授权对象建议只填自己的出口 IP。
+2. **在服务器上跑一键脚本**（控制台「远程连接」→ Workbench 登录，管理员 PowerShell）：
+
+```powershell
+$p="$env:TEMP\na-install.ps1"; irm https://raw.githubusercontent.com/Richardhuke/neverattend/main/deploy/win-install.ps1 -OutFile $p
+powershell -ExecutionPolicy Bypass -File $p
+```
+
+脚本会：装 Node 22 LTS（已有则跳过）→ 从 GitHub 拉源码到 `C:\neverattend` → 前端 `npm ci && npm run build`（产物落 `backend\static`）→ 后端 `npm ci` → 生成 `C:\neverattend\run.cmd`（含随机 `ACCESS_KEY`）→ 注册开机自启计划任务 `NeverAttend`（SYSTEM 权限，崩溃 5 秒后自拉起）→ 放行本机防火墙 8000 → 自检并打印入口地址。
+
+结束时会输出两行东西，照抄：
+
+```
+公网入口： http://121.196.174.13:8000/?key=<随机串>
+日志：     C:\neverattend\logs\app.log
+```
+
+### 可选环境变量
+
+跑之前 `set` 一下即可改默认行为：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `NA_PORT` | `8000` | 监听端口 |
+| `NA_ROOT` | `C:\neverattend` | 安装目录 |
+| `NA_MOCK` | `0` | `0` 接真实浙大体艺，`1` 用演示数据 |
+| `NA_AUTO` | `0` | 守护是否自动提交（`1` 才自动签） |
+| `NA_ACCESS_KEY` | 随机 | 访问密钥；`/api/config` 免钥，其余接口要 `X-Access-Key` |
+
+### 日常运维
+
+```powershell
+schtasks /end /tn NeverAttend     # 停
+schtasks /run /tn NeverAttend     # 起
+Get-Content C:\neverattend\logs\app.log -Tail 50 -Wait   # 看日志
+powershell -ExecutionPolicy Bypass -File $env:TEMP\na-install.ps1   # 更新：重跑脚本即可
+```
+
+### 注意
+
+- 首次访问务必带上 `?key=...`，密钥会存进浏览器 localStorage；之后直接开 `http://IP:8000/` 即可。密钥泄露就改 `run.cmd` 里的 `ACCESS_KEY` 后重启任务。
+- 会话存在**内存**里：重启服务要重新登录绑定一次。
+- Windows Server 的「IE 增强安全配置」不影响 PowerShell 下载；如果 `irm` 报 TLS 错误，先执行 `[Net.ServicePointManager]::SecurityProtocol='Tls12'`。
+- 想上 HTTPS，两条路：绑个域名（大陆机器要备案）用 Caddy/win-acme 签 Let's Encrypt；或者用 Cloudflare 免费域名 + 隧道。IP 直连的 HTTP 版本不建议长期暴露在公网。
