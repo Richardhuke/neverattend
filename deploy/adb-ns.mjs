@@ -19,6 +19,8 @@
  *   NA_OUT_FROM=17:50      到这个点后改为点「签退」
  *   NA_END_AT=18:20        时间窗终点，之后 idle
  *   NA_COURSE=身体素质课    课程名
+ *   NA_MOCK=30.302331,120.089136  开跑前把 GPS 覆盖到这个坐标（纬度,经度）
+ *   NA_MOCK_ACC=5          模拟定位的精度（米）
  *
  * 依赖：adb.exe（默认 C:\Users\Richa\adbdl\platform-tools\adb.exe，可用 --adb 覆盖）
  */
@@ -43,7 +45,8 @@ const CONFIG = {
   courseName: process.env.NA_COURSE || '身体素质课',
   outFrom: process.env.NA_OUT_FROM || '17:50',
   startFrom: process.env.NA_START_FROM || '17:00',
-  endAt: process.env.NA_END_AT || '18:20'
+  endAt: process.env.NA_END_AT || '18:20',
+  mock: process.env.NA_MOCK || ''
 }
 
 const argv = process.argv.slice(2)
@@ -111,6 +114,24 @@ async function launchApp () {
   } catch {
     return false
   }
+}
+
+/* ---------- 模拟定位：用系统测试 provider 覆盖 GPS，不需要第三方 App ---------- */
+const MOCK_RE = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/
+let mockReady = false
+
+async function ensureMockProvider () {
+  if (mockReady) return
+  try { await adb(['shell', 'appops', 'set', 'com.android.shell', 'android:mock_location', 'allow']) } catch {}
+  try { await adb(['shell', 'cmd', 'location', 'providers', 'add-test-provider', 'gps']) } catch {}
+  try { await adb(['shell', 'cmd', 'location', 'providers', 'set-test-provider-enabled', 'gps', 'true']) } catch {}
+  mockReady = true
+}
+
+async function setMockLocation (lat, lng, acc) {
+  await ensureMockProvider()
+  await adb(['shell', 'cmd', 'location', 'providers', 'set-test-provider-location', 'gps',
+    '--location', lat + ',' + lng, '--accuracy', String(acc || 5)])
 }
 
 /* ---------- 导航：首页 → 身体素质课考勤 → 课程列表 → 课程排课 ---------- */
@@ -416,6 +437,17 @@ async function tick (opts = {}) {
   if (!row) {
     console.log(`[idle] 今天（${todayStr()}）没有课次`)
     return
+  }
+
+  const mock = String(CONFIG.mock).match(MOCK_RE)
+  if (mock) {
+    try {
+      await setMockLocation(mock[1], mock[2], Number(process.env.NA_MOCK_ACC || 5))
+      console.log(`[mock] GPS 已覆盖到 ${mock[1]},${mock[2]}`)
+      await sleep(1500)
+    } catch (e) {
+      console.log(`[warn] 设置模拟定位失败：${e.message}`)
+    }
   }
 
   if (!inWindow()) {
