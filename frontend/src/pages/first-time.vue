@@ -21,8 +21,8 @@ const busy = ref(false)
 const err = ref('')
 const me = ref(null)
 
-const CAS_URL = 'https://zjuam.zju.edu.cn/cas/login?service=http://www.tyys.zju.edu.cn/cgapp-server/cas/appLogin'
-const TOKEN_RE = /window\.app\.getUserName\('(\d+)',\s*'([^']+)'\)/
+const CAS_URL = 'https://zjuam.zju.edu.cn/cas/login?service=http://www.tyys.zju.edu.cn/ggtypt/dologin'
+const TOKEN_RE = /window\.app\.getUserName\(\s*['"](\d{6,})['"]\s*,\s*['"]([^'"]+)['"]\s*\)/
 
 async function submitPassword () {
   err.value = ''
@@ -44,12 +44,26 @@ async function submitPassword () {
 
 async function submitToken () {
   err.value = ''
-  const m = String(raw.value).match(TOKEN_RE)
-  if (!m) { err.value = '无法从源码中提取 token，请确认已完整复制 HTML 源码'; return }
+  const text = String(raw.value || '').trim()
+  if (text.length < 20) { err.value = '请粘贴登录成功后的整页源码（Ctrl+U → Ctrl+A → Ctrl+C）'; return }
   busy.value = true
   try {
-    const info = await api.verifyToken(m[1], m[2])
-    user.setCredentials(info.xh || m[1], info.token)
+    // 先交给后端解析（正则更宽容，能兜住各种页面结构），失败再退回本地正则
+    let xh = ''
+    let token = ''
+    try {
+      const hit = await api.parseToken(text)
+      xh = hit.xh
+      token = hit.token
+    } catch (e) {
+      const m = text.match(TOKEN_RE)
+      if (!m) throw e
+      xh = m[1]
+      token = m[2]
+    }
+    if (!xh) throw new Error('源码里没有学号，无法绑定')
+    const info = await api.verifyToken(xh, token)
+    user.setCredentials(info.xh || xh, info.token)
     me.value = info
   } catch (e) {
     err.value = e.message || String(e)

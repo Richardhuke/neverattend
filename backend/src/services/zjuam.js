@@ -28,7 +28,7 @@ export function encodePassword (plain) {
 
 // 从 tyys 首屏 HTML 里抽 (学号, JWT)：先按已知的 window.app.getUserName 形态，
 // 再退化为「JWT 形态串 + 学号」扫描，最后退化 key=value。任何一步命中即可。
-function extractToken (html) {
+export function extractToken (html) {
   const text = String(html || '')
   const pairs = [
     /window\.app\.getUserName\(\s*['"](\d{6,})['"]\s*,\s*['"]([^'"]+)['"]\s*\)/,
@@ -117,7 +117,7 @@ export async function loginWithPassword (username, plainPassword) {
   }
   const { ZJUAM } = await import('login-zju')
   const am = new ZJUAM(username, plainPassword)
-  const service = `${config.tyys.base}${config.tyys.endpoints.casLogin}`
+  const service = config.tyys.casService || `${config.tyys.base}${config.tyys.endpoints.casLogin}`
   const first = await am.loginSvc(service)
   const landing = await resolveLanding(first, am)
   const hit = extractToken(landing.body) || extractToken(first)

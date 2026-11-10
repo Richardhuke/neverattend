@@ -2,7 +2,7 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
-import { loginWithPassword, verifyToken, decodePassword } from '../services/zjuam.js'
+import { loginWithPassword, verifyToken, decodePassword, extractToken } from '../services/zjuam.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
 import { watcher, tickOnce } from '../services/watcher.js'
@@ -50,6 +50,15 @@ router.post('/getToken', async (req, res) => {
   } catch (err) {
     bad(res, 401, `CAS 登录失败：${err?.message || String(err)}`)
   }
+})
+
+/** Token 模式第一步：把用户粘回来的整页源码交给后端解析（正则比前端宽容） */
+router.post('/parse-token', (req, res) => {
+  const { text } = req.body || {}
+  if (!text || String(text).length < 20) return bad(res, 400, '请粘贴登录后的整页源码（Ctrl+U 全选复制）')
+  const hit = extractToken(String(text))
+  if (!hit) return bad(res, 422, '没能从这段源码里找到学号 + token，请确认复制的是登录成功后的页面（含 window.app.getUserName 或 eyJ 开头的 JWT）')
+  res.json({ xh: hit.xh, token: hit.token, via: hit.via })
 })
 
 /** Token 模式校验：用户自己在浏览器登录后贴回的 JWT */

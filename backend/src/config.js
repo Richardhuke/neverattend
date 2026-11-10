@@ -42,9 +42,14 @@ export const config = {
   staticDir: path.resolve(ROOT, process.env.STATIC_DIR || './static'),
   tyys: {
     base: (process.env.TYYS_BASE || 'http://www.tyys.zju.edu.cn/cgapp-server').replace(/\/$/, ''),
+    // CAS 的 service 参数：实测 /cgapp-server/cas/appLogin 验证 ticket 后只会落到
+    // zfsoft 的「浏览器版本过低」错误页，真正的业务入口是 /ggtypt/dologin
+    casService: (process.env.TYYS_CAS_SERVICE || 'http://www.tyys.zju.edu.cn/ggtypt/dologin').trim(),
     mock: String(process.env.TYYS_MOCK ?? '1') !== '0',
     endpoints: loadEndpoints()
   },
+  // 会话落盘目录：重启后不必让所有人重新绑定（只存 token/坐标，不存密码）
+  dataDir: path.resolve(ROOT, process.env.DATA_DIR || './data'),
   watch: {
     intervalMs: Number(process.env.WATCH_INTERVAL_MS || 10000),
     autoCheckin: String(process.env.WATCH_AUTO_CHECKIN ?? '1') !== '0'

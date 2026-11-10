@@ -66,6 +66,7 @@ export const api = {
   config: () => request('/config', { method: 'GET' }),
   getToken: (username, password) => request('/getToken', { body: { username, password } }),
   verifyToken: (username, token) => request('/verifyToken', { body: { username, token } }),
+  parseToken: (text) => request('/parse-token', { body: { text } }),
   status: (username, token) => request(`/attendance/status?username=${encodeURIComponent(username)}&token=${encodeURIComponent(token)}`, { method: 'GET' }),
   alreadySigns: (username, token) => request('/alreadySigns', { body: { username, token } }),
   inWindow: (username, token) => request('/inCheckinWindow', { body: { username, token } }),
