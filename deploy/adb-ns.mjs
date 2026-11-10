@@ -138,6 +138,7 @@ function findByText (nodes, keyword, { minW = 0, minH = 0, exact = false } = {})
 function pageOf (nodes) {
   const t = norm(nodes.map((n) => (n.text || '') + (n.desc || '')).join('\n'))
   if (/课程排课/.test(t) && /第\d+次课/.test(t)) return 'schedule'
+  if (/签到时间/.test(t) && /GPS考勤|二维码/.test(t)) return 'sign'
   if (/我的记录/.test(t)) return 'record'
   if (/课程列表/.test(t) && t.includes(CONFIG.courseName)) return 'list'
   if (t.includes(`${CONFIG.courseName}考勤`) || /修学记录/.test(t)) return 'home'
@@ -346,6 +347,46 @@ function textsOf (nodes) {
   return nodes.map((n) => (n.text || '') + (n.desc || '')).join(' | ')
 }
 
+/* 系统提示弹窗（未发现考勤地点等）点掉 */
+async function dismissDialog (nodes) {
+  const btn = nodes.find((n) => n.clickable && /^(确定|取消|知道了|关闭)$/.test(norm(n.text || n.desc)))
+  if (btn) {
+    console.log(`[nav] 关掉提示「${norm(btn.text || btn.desc)}」`)
+    await tapAt(btn, norm(btn.text || btn.desc))
+    await sleep(800)
+  }
+}
+
+/* 签到页：点中间的大圆按钮才算提交 */
+async function submitOnSignPage ({ dry, no }) {
+  const nodes = parseNodes(await dumpUi())
+  const big = nodes.find((n) => /ll_attendance$/.test(n.id) && n.w > 200 && n.h > 200)
+  if (!big) {
+    console.log('[warn] 签到页没找到中间的签到圆钮')
+    return
+  }
+  if (dry) {
+    console.log(`[plan] 签到页圆钮 @ (${big.x},${big.y})`)
+    return
+  }
+  await tapAt(big, '签到圆钮')
+  await sleep(3500)
+  const after = parseNodes(await dumpUi())
+  const all = textsOf(after)
+  const ok = /(已签到|签到成功|签退成功|已签退)/.test(all) && !/未签到/.test(all)
+  const bad = all.match(/(未发现考勤地点|不在考勤范围|超出[^|]{0,8}|距离[^|]{0,12}|未到[^|]{0,8}|已结束|过期)/)
+  if (ok) {
+    console.log(`[ok] 第${no}次课 签到成功`)
+    await report('in', `adb 第${no}次课 签到成功`)
+  } else if (bad) {
+    console.log(`[warn] 被拒：${bad[0]}`)
+    await dismissDialog(after)
+  } else {
+    console.log(`[warn] 点完圆钮无明确结果：${all.slice(0, 160)}`)
+    await dismissDialog(after)
+  }
+}
+
 async function tick (opts = {}) {
   const dry = !!opts.dry
   await wake()
@@ -403,7 +444,12 @@ async function tick (opts = {}) {
   await tapAt(btn, `${row.no} ${keyword}`)
   await sleep(3000)
 
-  const after = parseNodes(await dumpUi())
+  let after = parseNodes(await dumpUi())
+  if (pageOf(after) === 'sign') {
+    lastFired[action] = Date.now()
+    await submitOnSignPage({ dry, no: row.no })
+    return
+  }
   const all = textsOf(after)
   const ok = /(成功|已签到|已签退|签到完成|签退完成)/.test(all)
   const bad = all.match(/(失败|不在|未到|范围|超出|过期|超时|未开始|已结束|不能|无法)[^|]{0,24}/)
