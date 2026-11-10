@@ -48,10 +48,11 @@ if ($bind) { Info ('监听：' + (($bind.Line -replace '\s+', ' ').Trim())) }
 
 # ---------- 2. 下载 cloudflared ----------
 if (-not (Test-Path $Exe) -or ((Get-Item $Exe).Length -lt 5MB)) {
+  # 国内机器先走镜像，直连 github 放最后（大陆常年被墙，直连会白等 2 分钟）
   $urls = @(
-    'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe',
     'https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe',
-    'https://gh-proxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
+    'https://gh-proxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe',
+    'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
   )
   $got = $false
   foreach ($u in $urls) {
