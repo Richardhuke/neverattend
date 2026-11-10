@@ -67,47 +67,47 @@ function dumpHtml (html) {
  */
 
 /**
- * loginSvc 有时只返回一段「落地地址文本」（例如
- * http://www.tyys.zju.edu.cn/cgapp-server/cas/appLogin?ticket=ST-xxx ），
- * 真正带 token 的页面要再请求一次。这里把它跟到底。
+ * tyys 的登录不是一次跳转。实测链路：
+ *   /cgapp-server/loginto            → 302 /ggtypt/login?service=…/toSysLogin
+ *   /ggtypt/login?service=…          → 200 <script>location='…cas/login?service=…/ggtypt/dologin'
+ *   cas/login?service=…/dologin      → 302 /ggtypt/dologin?ticket=ST-…      （CAS 发 ST）
+ *   /ggtypt/dologin?ticket=ST-…      → 302 /cgapp-server/toSysLogin?ticket=… （换成业务 ticket）
+ *   /cgapp-server/toSysLogin?ticket=…→ 302 H5 首屏（内含 window.app.getUserName('xh','JWT')）
+ * 每一跳都可能下发新的 JSESSIONID（/ggtypt 与 /cgapp-server 各一套 Cookie 路径），
+ * 所以必须 redirect:'manual' 逐跳走，让 login-zju 的 cookie jar 收齐；跟随后再取 body。
  */
-async function resolveLanding (text, am) {
-  const raw = String(text || '').trim()
-  let target = ''
-  if (/^https?:\/\/\S+$/i.test(raw)) target = raw
-  else {
-    const rel = raw.match(/location(?:\.href)?\s*=\s*['"](https?:\/\/[^'"]+)['"]/i)
-      || raw.match(/['"](https?:\/\/[^'"]*[?&]ticket=[^'"]+)['"]/i)
-    if (rel) target = rel[1]
-  }
-  if (!target) return { body: raw, url: '' }
-  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
-  // 必须复用 login-zju 内部的 cookie jar：tyys 落地页靠 JSESSIONID 认会话，
-  // 裸 fetch 会丢 cookie，只能拿到 400 Invalid request。
-  const pick = (url) => (am && typeof am.fetch === 'function'
-    ? am.fetch(url, { redirect: 'follow' })
-    : fetch(url, { redirect: 'follow', headers: { 'User-Agent': UA } }))
-  try {
-    let url = target
-    let html = ''
-    // 落地页可能是 302 链，也可能是 meta refresh / JS 跳转，最多跟 4 跳
-    for (let hop = 0; hop < 4; hop += 1) {
-      const res = await pick(url)
-      html = await res.text()
-      url = res.url || url
-      pushEvent('info', 'auth', `落地页 hop${hop} ${res.status}（${html.length} 字节）：${url}`)
-      if (extractToken(html)) break
-      const refresh = html.match(/http-equiv=["']?refresh["']?[^>]*content=["'][^"']*url=([^"'>\s]+)/i)
-      const jsLoc = html.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i)
-      const next = (refresh && refresh[1]) || (jsLoc && jsLoc[1])
-      if (!next) break
-      try { url = new URL(next, url).toString() } catch { break }
+async function walkLoginChain (am, maxHops = 12) {
+  const origin = new URL(config.tyys.base).origin
+  let url = `${origin}/cgapp-server/loginto`
+  let body = ''
+  let landed = url
+  for (let hop = 0; hop < maxHops; hop += 1) {
+    let res
+    try {
+      res = await am.fetch(url, { redirect: 'manual' })
+    } catch (e) {
+      pushEvent('warn', 'auth', `登录链 hop${hop} 请求失败：${e?.message || e}`)
+      break
     }
-    return { body: html, url }
-  } catch (e) {
-    pushEvent('warn', 'auth', `跟随落地页失败：${e?.message || e}`)
-    return { body: raw, url: target }
+    const text = await res.text()
+    const loc = res.headers.get('location')
+    pushEvent('info', 'auth', `登录链 hop${hop} ${res.status}（${text.length} 字节）${loc ? ` → ${loc}` : ''}`)
+    landed = url
+    if (res.status >= 300 && res.status < 400 && loc) {
+      url = new URL(loc, url).toString()
+      continue
+    }
+    body = text
+    if (extractToken(body)) break
+    // 有些跳转是页面里的脚本，不是 302
+    const js = body.match(/location(?:\.href)?\s*=\s*['"](https?:\/\/[^'"]+)['"]/i)
+    if (res.status === 200 && js) {
+      url = js[1]
+      continue
+    }
+    break
   }
+  return { body, url: landed }
 }
 
 export async function loginWithPassword (username, plainPassword) {
@@ -117,17 +117,15 @@ export async function loginWithPassword (username, plainPassword) {
   }
   const { ZJUAM } = await import('login-zju')
   const am = new ZJUAM(username, plainPassword)
-  const service = config.tyys.casService || `${config.tyys.base}${config.tyys.endpoints.casLogin}`
-  const first = await am.loginSvc(service)
-  const landing = await resolveLanding(first, am)
-  const hit = extractToken(landing.body) || extractToken(first)
+  // 先建立 ZJUAM 会话（CASTGC），再沿 tyys 自己的跳转链走到底
+  await am.login()
+  const chain = await walkLoginChain(am)
+  const hit = extractToken(chain.body)
   if (!hit) {
-    const saved = dumpHtml(`<!-- landing url: ${landing.url} -->
-<!-- loginSvc: -->
-${first}
-<!-- landing body: -->
-${landing.body}`)
-    throw new Error(`CAS 登录成功，但未能在返回页面中提取 token（落地页 ${landing.url || '未知'}，${landing.body.length} 字节）${saved ? `；已存到 ${saved}` : ''}`)
+    const saved = dumpHtml(`<!-- chain landed: ${chain.url} -->
+<!-- chain body: -->
+${chain.body}`)
+    throw new Error(`CAS 登录成功，但登录链终点没有 token（落点 ${chain.url || '未知'}，${chain.body.length} 字节）${saved ? `；已存到 ${saved}` : ''}`)
   }
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
