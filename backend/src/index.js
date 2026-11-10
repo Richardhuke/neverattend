@@ -56,9 +56,13 @@ app.get('*', (req, res) => {
   )
 })
 
-const server = app.listen(config.port, () => {
-  pushEvent('success', 'boot', `NeverAttend 启动于 http://localhost:${config.port}（${config.tyys.mock ? 'mock' : 'live'} 模式）`)
-  console.log(`[neverattend] listening on http://localhost:${config.port}  mode=${config.tyys.mock ? 'mock' : 'live'}`)
+// 监听地址：默认 0.0.0.0（所有网卡），这样公网 IP:PORT 才连得上。
+// 只想要本机访问时设 HOST=127.0.0.1。
+const HOST = String(process.env.HOST || '0.0.0.0').trim()
+
+const server = app.listen(config.port, HOST, () => {
+  pushEvent('success', 'boot', `NeverAttend 启动于 http://${HOST}:${config.port}（${config.tyys.mock ? 'mock' : 'live'} 模式）`)
+  console.log(`[neverattend] listening on http://${HOST}:${config.port}  mode=${config.tyys.mock ? 'mock' : 'live'}`)
   // 守护进程常驻：每 10s 轮询一次，发现待签到即自动签到
   watcher.start({ intervalMs: config.watch.intervalMs, autoCheckin: config.watch.autoCheckin })
   console.log(`[neverattend] watcher started, interval=${config.watch.intervalMs}ms autoCheckin=${config.watch.autoCheckin}`)

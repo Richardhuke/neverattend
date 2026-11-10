@@ -145,6 +145,7 @@ $lines = @(
   'chcp 65001 >nul',
   "cd /d `"$be`"",
   "set PORT=$Port",
+  'set HOST=0.0.0.0',
   'set STATIC_DIR=./static',
   "set TYYS_MOCK=$Mock",
   'set WATCH_INTERVAL_MS=10000',
@@ -169,6 +170,8 @@ Step '5/6 防火墙放行'
 if (-not (Get-NetFirewallRule -DisplayName "NeverAttend $Port" -ErrorAction SilentlyContinue)) {
   New-NetFirewallRule -DisplayName "NeverAttend $Port" -Direction Inbound -Protocol TCP -LocalPort $Port -Action Allow -Profile Any | Out-Null
 }
+# 双保险：万一上面那条规则存在但被禁用/被策略覆盖，再用 netsh 叠加一条（同名会报「已存在」，忽略即可）
+& $env:ComSpec /c "netsh advfirewall firewall add rule name=`"NeverAttend $Port (netsh)`" dir=in action=allow protocol=TCP localport=$Port" 2>&1 | Out-Null
 Ok "已放行 TCP $Port（阿里云还需在「安全组」里再放行一次）"
 
 # ---------- 6. 自检 ----------
@@ -191,9 +194,23 @@ $pubIp = ''
 try { $pubIp = (Invoke-WebRequest 'http://100.100.100.200/latest/meta-data/eipv4' -UseBasicParsing -TimeoutSec 5).Content } catch {}
 if (-not $pubIp) { try { $pubIp = (Invoke-WebRequest 'http://100.100.100.200/latest/meta-data/public-ipv4' -UseBasicParsing -TimeoutSec 5).Content } catch {} }
 
+# 用自己的公网 IP 自探一次：本机 127.0.0.1 通不代表外面能连（网卡绑定 / 防火墙 / 安全组都可能挡）
+$pubOk = $false
+if ($pubIp) {
+  for ($i = 0; $i -lt 3 -and -not $pubOk; $i++) {
+    try {
+      $r2 = Invoke-WebRequest "http://$pubIp`:$Port/api/config" -UseBasicParsing -TimeoutSec 8
+      if ($r2.StatusCode -eq 200) { $pubOk = $true }
+    } catch {
+      if ($i -lt 2) { Start-Sleep -Seconds 2 }
+    }
+  }
+  if ($pubOk) { Ok "公网自探通过：http://$pubIp`:$Port 可达" }
+  else { Warn "公网自探失败（本机通、外网不通）：先查阿里云安全组入方向是否有 $Port/TCP，再查 Windows 防火墙；日志 $logDir\app.log" }
+}
+
 Write-Host "`n================ 部署完成 ================" -ForegroundColor Green
-if ($pubIp) { Write-Host "公网入口： http://$pubIp`:$Port/?key=$Key" -ForegroundColor Green }
-Write-Host "本机入口： http://127.0.0.1:$Port/?key=$Key"
+if ($pubIp) { Write-Host "公网入口： http://$pubIp`:$Port/?key=$Key" -ForegroundColor Green }Write-Host "本机入口： http://127.0.0.1:$Port/?key=$Key"
 Write-Host "访问密钥： $Key    （首次带 ?key= 打开，浏览器会记住；不要外传）"
 Write-Host "数据模式： $(if ($Mock -eq '1') { 'MOCK 演示数据' } else { '真实浙大体艺' })；守护自动提交：$(if ($Auto -eq '1') { '开' } else { '关（页面上手动启动）' })"
 Write-Host "日志：     $logDir\app.log"
