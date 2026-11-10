@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import { config } from '../config.js'
 import { pushEvent } from '../store.js'
 
@@ -25,7 +26,40 @@ export function encodePassword (plain) {
   return Buffer.concat([iv, c.update(plain, 'utf8'), c.final()]).toString('base64')
 }
 
-const TOKEN_RE = /window\.app\.getUserName\('(\d+)',\s*'([^']+)'\)/
+// 从 tyys 首屏 HTML 里抽 (学号, JWT)：先按已知的 window.app.getUserName 形态，
+// 再退化为「JWT 形态串 + 学号」扫描，最后退化 key=value。任何一步命中即可。
+function extractToken (html) {
+  const text = String(html || '')
+  const pairs = [
+    /window\.app\.getUserName\(\s*['"](\d{6,})['"]\s*,\s*['"]([^'"]+)['"]\s*\)/,
+    /getUserName\(\s*['"](\d{6,})['"]\s*,\s*['"]([^'"]+)['"]/,
+    /getUserInfo\(\s*['"](\d{6,})['"]\s*,\s*['"]([^'"]+)['"]/
+  ]
+  for (const re of pairs) {
+    const m = text.match(re)
+    if (m) return { xh: m[1], token: m[2], via: 'app-call' }
+  }
+  const jwt = text.match(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/)
+  const xh = text.match(/\b(3\d{9})\b/)
+  if (jwt) return { xh: xh ? xh[1] : '', token: jwt[0], via: 'jwt-scan' }
+  const kv = text.match(/["']?token["']?\s*[:=]\s*["']([A-Za-z0-9._-]{20,})["']/i)
+  if (kv) return { xh: xh ? xh[1] : '', token: kv[1], via: 'token-kv' }
+  return null
+}
+
+/** 登录失败时把首屏 HTML 落盘，供 /api/debug/login-html 取回分析 */
+function dumpHtml (html) {
+  const target = process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html')
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, String(html))
+    pushEvent('info', 'auth', `已把 tyys 首屏 HTML 落盘：${target}`)
+    return target
+  } catch (e) {
+    pushEvent('warn', 'auth', `HTML 落盘失败：${e?.message || e}`)
+    return ''
+  }
+}
 
 /**
  * 账密模式：服务端走 ZJUAM CAS 登录 tyys，拿到 H5 首屏里内联下发的 JWT。
@@ -40,12 +74,15 @@ export async function loginWithPassword (username, plainPassword) {
   const am = new ZJUAM(username, plainPassword)
   const service = `${config.tyys.base}${config.tyys.endpoints.casLogin}`
   const html = await am.loginSvc(service)
-  if (process.env.DUMP_HTML) {
-    try { fs.writeFileSync(process.env.DUMP_HTML, String(html)); pushEvent('info', 'auth', `已把 tyys 首屏 HTML 落盘：${process.env.DUMP_HTML}`) } catch {}
+  const hit = extractToken(html)
+  if (!hit) {
+    const saved = dumpHtml(html)
+    throw new Error(`CAS 登录成功，但未能在返回页面中提取 token（页面结构可能已变更）${saved ? `；首屏已存到 ${saved}` : ''}`)
   }
-  const m = String(html).match(TOKEN_RE)
-  if (!m) throw new Error('CAS 登录成功，但未能在返回页面中提取 token（页面结构可能已变更）')
-  return { username: m[1], token: m[2], xh: m[1] }
+  if (process.env.DUMP_HTML) dumpHtml(html)
+  pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
+  const xh = hit.xh || username
+  return { username: xh, token: hit.token, xh }
 }
 
 /**

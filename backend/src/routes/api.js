@@ -1,4 +1,6 @@
 import express from 'express'
+import fs from 'node:fs'
+import path from 'node:path'
 import { config } from '../config.js'
 import { loginWithPassword, verifyToken, decodePassword } from '../services/zjuam.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
@@ -74,6 +76,14 @@ router.post('/verifyToken', async (req, res) => {
 })
 
 /** 异地模式：登记该账号使用的坐标（含抖动半径），守护进程会复用 */
+// 调试：取回上一次登录失败时落盘的 tyys 首屏 HTML（只读，受 ACCESS_KEY 保护）
+router.get('/debug/login-html', (req, res) => {
+  const file = process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html')
+  if (!fs.existsSync(file)) return res.status(404).json({ detail: `还没有落盘文件：${file}` })
+  const text = fs.readFileSync(file, 'utf8')
+  res.json({ file, bytes: Buffer.byteLength(text), html: text.slice(0, 400000) })
+})
+
 router.post('/coords', (req, res) => {
   const { username, longitude, latitude, jitter, mode } = req.body || {}
   if (!username) return bad(res, 400, 'username 必填')

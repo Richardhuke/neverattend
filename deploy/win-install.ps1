@@ -29,7 +29,16 @@ $Repo   = if ($env:NA_REPO)  { $env:NA_REPO }  else { 'Richardhuke/neverattend' 
 $Branch = if ($env:NA_BRANCH){ $env:NA_BRANCH } else { 'main' }
 $Mock   = if ($env:NA_MOCK)  { $env:NA_MOCK }  else { '0' }
 $Auto   = if ($env:NA_AUTO)  { $env:NA_AUTO }  else { '0' }
-$Key    = if ($env:NA_ACCESS_KEY) { $env:NA_ACCESS_KEY } else { -join ('23456789abcdefghjkmnpqrstuvwxyz'.ToCharArray() | Get-Random -Count 20) }
+$Key = $env:NA_ACCESS_KEY
+if (-not $Key) {
+  # 重装时沿用已有 run.cmd 里的钥匙，避免「脚本打印的钥匙和运行进程不一致」
+  $oldRun = Join-Path $Root 'run.cmd'
+  if (Test-Path $oldRun) {
+    $m = Select-String -Path $oldRun -Pattern 'ACCESS_KEY=(\S+)' | Select-Object -First 1
+    if ($m) { $Key = $m.Matches[0].Groups[1].Value }
+  }
+}
+if (-not $Key) { $Key = -join ('23456789abcdefghjkmnpqrstuvwxyz'.ToCharArray() | Get-Random -Count 20) }
 
 $logDir = Join-Path $Root 'logs'
 
