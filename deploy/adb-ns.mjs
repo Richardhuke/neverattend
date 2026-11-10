@@ -91,6 +91,29 @@ async function wake () {
   try { await adb(['shell', 'wm', 'dismiss-keyguard']) } catch {}
 }
 
+/* 不在前台就把 App 拉到前台（等价于点桌面图标） */
+async function launchApp () {
+  try {
+    await adb(['shell', 'monkey', '-p', APP_PKG, '-c', 'android.intent.category.LAUNCHER', '1'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/* 在列表页点进「身体素质课」，让考勤页露出来 */
+async function openCourse (nodes) {
+  const hit = nodes.find((n) => {
+    const t = (n.text || '') + (n.desc || '')
+    return t.includes(CONFIG.courseName) && n.w > 120 && n.h > 40
+  })
+  if (!hit) return false
+  console.log(`[nav] 点「${CONFIG.courseName}」 @ (${hit.x},${hit.y})`)
+  await adb(['shell', 'input', 'tap', String(hit.x), String(hit.y)])
+  await sleep(2000)
+  return true
+}
+
 async function focusedPackage () {
   try {
     const out = await adb(['shell', 'dumpsys', 'window'])
@@ -189,14 +212,27 @@ const lastFired = { in: 0, out: 0 }
 
 async function tick () {
   await wake()
-  const pkg = await focusedPackage()
+  let pkg = await focusedPackage()
   if (!pkg.includes(APP_PKG)) {
-    console.log(`[skip] 前台是 ${pkg || '未知'}，不是浙大体艺`)
-    return
+    console.log(`[nav] 前台是 ${pkg || '未知'}，拉起浙大体艺`)
+    if (!(await launchApp())) {
+      console.log('[skip] 拉不起 App，跳过这一轮')
+      return
+    }
+    await sleep(3000)
+    pkg = await focusedPackage()
+    if (!pkg.includes(APP_PKG)) {
+      console.log(`[skip] 拉起后前台仍是 ${pkg || '未知'}，跳过`)
+      return
+    }
   }
 
-  const xml = await dumpUi()
-  const nodes = parseNodes(xml)
+  let nodes = parseNodes(await dumpUi())
+
+  // 考勤页没露出来（列表页）就先点进课程
+  if (!findButton(nodes, '签到') && !findButton(nodes, '签退')) {
+    if (await openCourse(nodes)) nodes = parseNodes(await dumpUi())
+  }
 
   // 先签退（老师下课后才出现），再签到
   for (const [keyword, action] of [['签退', 'out'], ['签到', 'in']]) {
