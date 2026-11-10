@@ -194,20 +194,17 @@ $pubIp = ''
 try { $pubIp = (Invoke-WebRequest 'http://100.100.100.200/latest/meta-data/eipv4' -UseBasicParsing -TimeoutSec 5).Content } catch {}
 if (-not $pubIp) { try { $pubIp = (Invoke-WebRequest 'http://100.100.100.200/latest/meta-data/public-ipv4' -UseBasicParsing -TimeoutSec 5).Content } catch {} }
 
-# 用自己的公网 IP 自探一次：本机 127.0.0.1 通不代表外面能连（网卡绑定 / 防火墙 / 安全组都可能挡）
-$pubOk = $false
-if ($pubIp) {
-  for ($i = 0; $i -lt 3 -and -not $pubOk; $i++) {
-    try {
-      $r2 = Invoke-WebRequest "http://$pubIp`:$Port/api/config" -UseBasicParsing -TimeoutSec 8
-      if ($r2.StatusCode -eq 200) { $pubOk = $true }
-    } catch {
-      if ($i -lt 2) { Start-Sleep -Seconds 2 }
-    }
-  }
-  if ($pubOk) { Ok "公网自探通过：http://$pubIp`:$Port 可达" }
-  else { Warn "公网自探失败（本机通、外网不通）：先查阿里云安全组入方向是否有 $Port/TCP，再查 Windows 防火墙；日志 $logDir\app.log" }
+# 绑定检查：必须看到 0.0.0.0:PORT（或 [::]:PORT），只绑 127.0.0.1 外网就连不上
+$bind = (netstat -ano | Select-String -Pattern ":$Port\s" | Select-String -Pattern "LISTENING" | Select-Object -First 1)
+if ($bind) {
+  $bindText = ($bind.Line -replace '\s+', ' ').Trim()
+  if ($bindText -match '0\.0\.0\.0:' -or $bindText -match '\[::\]:') { Ok "监听地址正确：$bindText" }
+  else { Warn "监听地址可能只绑了回环：$bindText —— 检查 HOST 环境变量是否被覆盖" }
+} else {
+  Warn "没看到 $Port 处于 LISTENING，进程可能没起来（看 $logDir\app.log）"
 }
+# 注意：阿里云 ECS 不支持用公网 IP 从机器内部回连自己（无 NAT 回环），所以这里不做公网自探，
+# 外网可达性请用手机流量或另一台机器打开 http://公网IP:PORT/api/config 验证。
 
 Write-Host "`n================ 部署完成 ================" -ForegroundColor Green
 if ($pubIp) { Write-Host "公网入口： http://$pubIp`:$Port/?key=$Key" -ForegroundColor Green }Write-Host "本机入口： http://127.0.0.1:$Port/?key=$Key"
