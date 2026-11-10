@@ -156,9 +156,10 @@ async function hop (jar, url) {
 }
 
 async function walkLoginChain (am, maxHops = 14) {
-  // 整条链都走非 www 域：/cgapp-server 的会话 cookie 只落在 tyys.zju.edu.cn 上
   const jar = new Jar()
-  let url = 'http://tyys.zju.edu.cn/cgapp-server/loginto'
+  // 直接进「教学管理」：体育课考勤（课程 / 场次）本来就归 ptm，
+  // 从 cgapp-server 进去只会撞「没有权限 -2」的 APP 后台门。
+  let url = 'http://www.tyys.zju.edu.cn/ptm/loginto'
   let body = ''
   let landed = url
   for (let hopNo = 0; hopNo < maxHops; hopNo += 1) {
@@ -202,7 +203,7 @@ async function walkLoginChain (am, maxHops = 14) {
     url = next
   }
   if (!extractToken(body)) {
-    pushEvent('info', 'auth', 'cgapp-server 是 APP 管理后台，学生账号无权限；改去其它子系统找学生端页面')
+    pushEvent('info', 'auth', 'ptm 落地页没有 token（多半是 SPA 外壳）；改去其它子系统找学生端页面')
     const probe = await surveySubsystems(am, jar)
     for (const line of probe.report) pushEvent('info', 'auth', `子系统 ${line}`)
     if (probe.body) return { body: probe.body, url: probe.url }
@@ -222,10 +223,10 @@ async function walkLoginChain (am, maxHops = 14) {
  * 跟着跳到落地页，谁吐出 window.app.getUserName 就认为找到了学生端页面。
  */
 const SUB_SYSTEMS = [
-  ['ptm', 'http://www.tyys.zju.edu.cn/ptm/loginto'],
   ['pft', 'http://tyys.zju.edu.cn/pft/loginto'],
   ['cts', 'http://tyys.zju.edu.cn/cts/loginto'],
-  ['gms', 'http://tyys.zju.edu.cn/gms/loginto']
+  ['gms', 'http://tyys.zju.edu.cn/gms/loginto'],
+  ['cgapp', 'http://tyys.zju.edu.cn/cgapp-server/loginto']
 ]
 
 function titleOf (html) {
@@ -245,6 +246,56 @@ function dumpNamed (name, url, html) {
     pushEvent('warn', 'auth', `子系统页面落盘失败（${name}）：${e?.message || e}`)
     return ''
   }
+}
+
+/**
+ * 落地页是 SPA 外壳时，token 和接口路径都在它引的 js 里。
+ * 用同一个已登录 jar 把同站脚本抓回来，就地找 token / 接口线索，并落盘一份待分析。
+ */
+async function harvestScripts (jar, base, html) {
+  const srcs = []
+  const re = /<script[^>]+src=["']([^"']+)["']/gi
+  let m = re.exec(html)
+  while (m && srcs.length < 8) {
+    const raw = m[1].trim()
+    m = re.exec(html)
+    if (!raw || /^(data:|blob:|about:)/i.test(raw)) continue
+    let abs = ''
+    try { abs = new URL(raw, base).toString() } catch { continue }
+    if (!/^https?:\/\/[a-z0-9.-]*tyys\.zju\.edu\.cn\//i.test(abs)) continue
+    if (!srcs.includes(abs)) srcs.push(abs)
+  }
+  if (!srcs.length) return { report: [], hits: 0, dumped: '' }
+  const report = []
+  const bodies = []
+  let hits = 0
+  for (const u of srcs) {
+    try {
+      const res = await hop(jar, u)
+      if (res.status >= 400) { report.push(`js ${u} → ${res.status}`); continue }
+      const text = await res.text()
+      if (!text) { report.push(`js ${u} 空`); continue }
+      const tokenish = /getUserName|eyJ[A-Za-z0-9_-]{16,}/.test(text)
+      if (tokenish) hits += 1
+      report.push(`js ${u.split('/').pop()} ${text.length} 字${tokenish ? ' 含token线索' : ''}`)
+      bodies.push(`/* ${u} */\n${text}`)
+    } catch (e) {
+      report.push(`js ${u} 失败：${e?.message || e}`)
+    }
+  }
+  let dumped = ''
+  if (hits || bodies.length) {
+    const dir = path.dirname(process.env.DUMP_HTML || path.join(process.cwd(), 'logs', 'last-login.html'))
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      const target = path.join(dir, `sub-${base.replace(/[^a-z0-9]+/gi, '_').slice(-24)}.js.txt`)
+      fs.writeFileSync(target, bodies.join('\n\n'))
+      dumped = target
+    } catch (e) {
+      pushEvent('warn', 'auth', `脚本落盘失败：${e?.message || e}`)
+    }
+  }
+  return { report, hits, dumped }
 }
 
 async function surveySubsystems (am, jar) {
@@ -300,6 +351,9 @@ async function surveySubsystems (am, jar) {
     if (hit) return { body: page, url: landed, report }
     const saved = dumpNamed(name, landed, page)
     if (saved) report.push(`${name} 已落盘 ${saved}`)
+    const js = await harvestScripts(jar, landed, page)
+    for (const line of js.report) report.push(`${name} ${line}`)
+    if (js.dumped) report.push(`${name} 脚本已落盘 ${js.dumped}`)
   }
   return { body: '', url: '', report }
 }
@@ -319,8 +373,8 @@ export async function loginWithPassword (username, plainPassword) {
     const saved = dumpHtml(`<!-- chain landed: ${chain.url} -->
 <!-- chain body: -->
 ${chain.body}`)
-    const hint = /没有权限/.test(chain.body) ? '（cgapp 回了「没有权限」：它是 APP 管理后台，学生账号本来不从这里进）' : ''
-    throw new Error(`CAS 登录成功（票据有效），但 ptm/pft/cts/gms 四个子系统落地页都没找到 token；末次落点 ${chain.url || '未知'}（${chain.body.length} 字）${hint}。探测明细见 /api/debug/events，各子系统页面已存 logs/sub-*.html${saved ? `，末页 ${saved}` : ''}`)
+    const hint = /没有权限/.test(chain.body) ? '（落在「没有权限」页：那是 APP 管理后台的门，学生账号本来不从这里进）' : ''
+    throw new Error(`CAS 登录成功（票据有效），但 ptm 主链和 pft/cts/gms/cgapp 兜底都没找到 token；末次落点 ${chain.url || '未知'}（${chain.body.length} 字）${hint}。探测明细见 /api/debug/events，各子系统页面已存 logs/sub-*.html${saved ? `，末页 ${saved}` : ''}`)
   }
   pushEvent('info', 'auth', `已从首屏提取 token（${hit.via}）`)
   const xh = hit.xh || username
@@ -371,4 +425,4 @@ export function mockToken (username) {
 }
 
 // 仅用于本地联调：验证跨域同名 JSESSIONID 不会被互相覆盖
-export const __test = { Jar, hop, walkLoginChain, surveySubsystems, titleOf, extractToken }
+export const __test = { Jar, hop, walkLoginChain, surveySubsystems, titleOf, extractToken, harvestScripts }
