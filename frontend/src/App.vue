@@ -9,6 +9,7 @@ const router = useRouter()
 const user = useUserStore()
 const nav = [
   { to: '/', label: 'Run', icon: '▶' },
+  { to: '/queue', label: '排队', icon: '⧗' },
   { to: '/manage', label: 'Manage', icon: '☰' },
   { to: '/about', label: 'About', icon: '?' }
 ]
