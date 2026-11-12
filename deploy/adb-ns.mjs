@@ -176,43 +176,59 @@ function pageOf (nodes) {
   if (/课程排课/.test(t) && /第\d+次课/.test(t)) return 'schedule'
   if (/签到时间/.test(t) && /GPS考勤|二维码/.test(t)) return 'sign'
   if (/我的记录/.test(t)) return 'record'
-  if (/课程列表/.test(t) && t.includes(CONFIG.courseName)) return 'list'
+  if (/课程列表/.test(t)) return 'list'
   if (t.includes(`${CONFIG.courseName}考勤`) || /修学记录/.test(t)) return 'home'
   return 'other'
 }
 
 /* 把界面推进到「课程排课」，返回最后的节点表 */
+// 等 WebView 渲染完：反复 dump，直到拿到非空文本（最多 ~5.4s）
+async function settle (tries = 6) {
+  for (let i = 0; i < tries; i++) {
+    await sleep(900)
+    try {
+      const nodes = parseNodes(await dumpUi())
+      const t = nodes.map((n) => (n.text || '') + (n.desc || '')).join('')
+      if (t.trim()) return nodes
+    } catch {}
+  }
+  return null
+}
+
 async function gotoSchedule (nodes) {
-  for (let step = 0; step < 6; step++) {
+  for (let step = 0; step < 8; step++) {
     const page = pageOf(nodes)
+    console.log(`[nav] step ${step} 页面=${page}`)
     if (page === 'schedule') return nodes
+
     if (page === 'record') {
       const tab = findByText(nodes, '课程排课', { minW: 80 })
-      if (tab) {
-        await tapAt(tab, '课程排课 tab')
-      } else {
-        console.log('[nav] 在「我的记录」页，返回上一层')
-        await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
-      }
-      await sleep(1800)
-      nodes = parseNodes(await dumpUi())
-      continue
+      if (tab) await tapAt(tab, '课程排课 tab')
+      else await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
     } else if (page === 'list') {
       const row = findByText(nodes, CONFIG.courseName, { minW: 400 })
-      if (row) { await tapAt(row, CONFIG.courseName); await sleep(2000); nodes = parseNodes(await dumpUi()); continue }
+      if (row) await tapAt(row, CONFIG.courseName)
+      else {
+        console.log('[nav] 课程列表里找不到课程行，退回上一层')
+        await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+      }
     } else if (page === 'home') {
       const entry = findByText(nodes, `${CONFIG.courseName}考勤`, { minW: 80 })
-      if (entry) { await tapAt(entry, `${CONFIG.courseName}考勤`); await sleep(2500); nodes = parseNodes(await dumpUi()); continue }
+      if (entry) await tapAt(entry, `${CONFIG.courseName}考勤`)
+      else if (step < 2) await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+    } else if (page === 'sign') {
+      console.log('[nav] 已在签到页')
+      return nodes
+    } else {
+      // 认不出：先等它渲染，再退回上一层（最多 3 次，避免退到桌面）
+      const waited = await settle(2)
+      if (waited) { nodes = waited; continue }
+      if (step < 3) await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
+      else break
     }
-    // 兜底：退一层再看（最多 3 次，避免退到桌面）
-    if (step < 3) {
-      console.log(`[nav] 认不出页面（${page}），退一层`)
-      await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK'])
-      await sleep(1500)
-      nodes = parseNodes(await dumpUi())
-      continue
-    }
-    break
+
+    const next = await settle()
+    nodes = next || parseNodes(await dumpUi())
   }
   return nodes
 }
