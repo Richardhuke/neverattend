@@ -7,6 +7,7 @@ import { appLogin, probeToken, appFetch, APP_BASE } from '../services/appapi.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
 import { ptmStatus } from '../services/ptm.js'
 import { reportPhone, phoneStatus, phoneSessions } from '../services/phone.js'
+import { available as signerAvailable, describe as signerDescribe, health as signerHealth, sign as signRequest } from '../services/signer.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
 import { watcher, tickOnce } from '../services/watcher.js'
 import { sessionStore, listEvents, pushEvent } from '../store.js'
@@ -493,6 +494,31 @@ router.post('/device/report', (req, res) => {
     if (deviceId) heartbeat({ deviceId })
     const job = finishJob(jobId, { ok: !!ok, message, action, log })
     res.json({ ok: true, job, state: jobState() })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+// ---- 签名机（ARM64 上的 cgapiEnrypt）----
+// 配 ARM_SIGN_URL=http://127.0.0.1:8791 或 ARM_SIGN_CMD=/opt/armsign/arm_sign.py 后生效
+router.get('/sign/status', async (req, res) => {
+  const info = signerDescribe()
+  if (!signerAvailable()) return res.json({ ok: true, configured: false, ...info })
+  try {
+    const h = await signerHealth()
+    res.json({ ok: Boolean(h && h.ok), configured: true, ...info, health: h })
+  } catch (err) {
+    res.json({ ok: false, configured: true, ...info, error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.post('/sign/test', async (req, res) => {
+  try {
+    const { path: p0, query } = req.body || {}
+    const p = p0 || '/api/l/v6/attendance/attendancelist'
+    const q = query || 'timestamp=1700000000&uid=3260103483'
+    const out = await signRequest(p, q)
+    res.json({ ok: true, path: p, query: q, result: out, len: String(out).length })
   } catch (err) {
     bad(res, 400, err instanceof Error ? err.message : String(err))
   }
