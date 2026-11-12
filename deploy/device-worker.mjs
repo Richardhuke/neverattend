@@ -32,7 +32,7 @@ const arg = (name, def) => {
 }
 const has = (name) => process.argv.includes(name)
 
-const SERVER = String(process.env.NA_SERVER || arg('--server', 'https://fabric-ear-also-romantic.trycloudflare.com')).replace(/\/+$/, '')
+const SERVER = String(process.env.NA_SERVER || arg('--server', 'https://fields-shame-enhanced-adding.trycloudflare.com')).replace(/\/+$/, '')
 const KEY = process.env.NA_KEY || arg('--key', 'thgc8exk73v2wy9j4pbd')
 const INTERVAL = Number(process.env.NA_INTERVAL || arg('--interval', 5000))
 const ONCE = has('--once')
@@ -84,6 +84,8 @@ function runDriver (serial, job) {
     ...process.env,
     NA_SERIAL: serial,
     NA_ACTION: job.action,
+    NA_SERVER: SERVER,
+    NA_KEY: KEY,
     NA_SKIP_WINDOW: '1' // 时间窗由服务端按课表判定
   }
   if (job.lat != null && job.lng != null) env.NA_MOCK = `${job.lat},${job.lng}`

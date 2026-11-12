@@ -35,7 +35,7 @@ const pexec = promisify(execFile)
 const APP_PKG = 'net.crigh.mysport'
 
 const CONFIG = {
-  server: process.env.NA_SERVER || 'https://fabric-ear-also-romantic.trycloudflare.com',
+  server: process.env.NA_SERVER || 'https://fields-shame-enhanced-adding.trycloudflare.com',
   key: process.env.NA_KEY || 'thgc8exk73v2wy9j4pbd',
   username: process.env.NA_USER || '3260103483',
   adb: process.env.NA_ADB || 'C:\\Users\\Richa\\adbdl\\platform-tools\\adb.exe',
