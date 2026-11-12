@@ -472,6 +472,81 @@ ${chain.body}`)
 }
 
 /**
+ * H5（ggtypt）探测：App 里「身体素质课考勤」那个 WebView 打开的就是这套页面。
+ * 如果它用的是普通 HTTP + JSESSIONID（而不是 /app/** 的原生签名接口），
+ * 那么「任何人输学号密码就能签到」可以完全在服务端完成，不需要手机农场。
+ *
+ * 这里用已缓存的 CAS 会话换一张 ggtypt 票据，落地页与引用脚本全部落盘，
+ * 并从脚本里找签到相关的接口路径。跑不通只记事件，不影响主登录流程。
+ */
+export async function probeH5 (username) {
+  const am = cachedAm(username)
+  if (!am) throw new Error('没有可复用的登录会话：请先在页面上用学号密码登录一次')
+  const SERVICE = 'http://www.tyys.zju.edu.cn/ggtypt/dologin'
+  const jar = new Jar()
+  let ticket = ''
+  try {
+    ticket = await am.loginSvc(SERVICE)
+  } catch (e) {
+    throw new Error(`换 ggtypt 票据失败：${e?.message || e}`)
+  }
+  if (!ticket) throw new Error('CAS 没有给 ggtypt 票据')
+  pushEvent('info', 'h5', `ggtypt 票据已签发：${String(ticket).slice(0, 100)}…`)
+
+  const hops = []
+  let url = ticket
+  let body = ''
+  let landed = ''
+  for (let i = 0; i < 10 && url; i += 1) {
+    let res
+    try {
+      res = await hop(jar, url)
+    } catch (e) {
+      hops.push({ url, error: String(e?.message || e) })
+      break
+    }
+    const loc = res.headers.get('location') || ''
+    hops.push({ url, status: res.status, location: loc })
+    if (res.status >= 300 && res.status < 400 && loc) {
+      url = new URL(loc, url).toString()
+      continue
+    }
+    body = await res.text()
+    landed = url
+    // 瘦跳转页（ggtypt 常见 200 + JS 跳转）继续跟一跳
+    if (!extractToken(body) && body.length < 2000) {
+      const js = body.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i)
+      if (js) {
+        url = new URL(js[1], url).toString()
+        continue
+      }
+    }
+    break
+  }
+  const saved = dumpNamed('ggtypt-index', landed || ticket, body)
+  const scripts = await harvestScripts(jar, landed || ticket, body).catch((e) => ({ report: [`脚本抓取失败：${e?.message || e}`], hits: 0, dumped: '' }))
+
+  // 从落地页 + 脚本里筛「像签到接口」的路径
+  const pathRe = /["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|app|h5|ggtypt|attendance|sign)[A-Za-z0-9_\-/.]{0,80})["'`]/g
+  const text = body + '\n' + (scripts.dumped ? '' : '')
+  const found = new Set()
+  let m = pathRe.exec(text)
+  while (m) {
+    const p = m[1]
+    if (!/\.(?:js|css|png|jpg|svg|ico)(?:$|\?)/i.test(p)) found.add(p)
+    m = pathRe.exec(text)
+  }
+  const signLike = [...found].filter((p) => /sign|attend|checkin|punch|考勤|签到/i.test(p)).slice(0, 40)
+  const ok = body.length > 0 && !/cas\/login/i.test(body)
+  pushEvent(
+    ok ? 'success' : 'warn',
+    'h5',
+    `ggtypt 落地：${landed || '空'} ${body.length} 字，cookie ${jar.dump().length} 条，脚本 ${scripts.report.length} 个，签到类路径 ${signLike.length} 条${saved ? `，页面 ${saved}` : ''}`
+  )
+  return { ok, landed, length: body.length, jar: jar.dump(), hops, scripts, paths: [...found].slice(0, 80), signLike, saved, scriptDump: scripts.dumped }
+}
+
+/**
  * Token 模式：用户自己在浏览器登录后把页面源码贴回来，前端已用同一正则抽出 (学号, token)。
  * 这里只做一次真实校验：带 token 拉一次用户信息。
  */

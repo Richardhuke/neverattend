@@ -2,7 +2,7 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
-import { loginWithPassword, verifyToken, decodePassword, extractToken, ptmFetch } from '../services/zjuam.js'
+import { loginWithPassword, verifyToken, decodePassword, extractToken, ptmFetch, probeH5 } from '../services/zjuam.js'
 import { appLogin, probeToken, appFetch, APP_BASE } from '../services/appapi.js'
 import { getCourses, listSessions, isMock } from '../services/tyys.js'
 import { ptmStatus } from '../services/ptm.js'
@@ -81,9 +81,25 @@ router.post('/getToken', async (req, res) => {
       mode: me.mode || (me.jar ? 'ptm' : 'token')
     })
     pushEvent('success', 'auth', `账号已接入：${me.xh || me.username}（${me.mode === 'ptm' ? 'ptm 会话' : 'token'}）`)
+    // 顺手探一下 H5（ggtypt）：判断「纯 HTTP 签到」是否可行，失败不影响登录
+    probeH5(me.xh || me.username).catch((e) => {
+      pushEvent('warn', 'h5', `H5 探测失败：${e?.message || e}`)
+    })
     res.json({ username: me.xh || me.username, token: me.token, mode: me.mode || (me.jar ? 'ptm' : 'token') })
   } catch (err) {
     bad(res, 401, `CAS 登录失败：${err?.message || String(err)}`)
+  }
+})
+
+/** H5（ggtypt）探测：需要进程内有该账号的 CAS 会话（正常登录一次即可） */
+router.get('/debug/h5', async (req, res) => {
+  const user = String(req.query.user || '').trim()
+  if (!user) return bad(res, 400, 'user 必填')
+  try {
+    const out = await probeH5(user)
+    res.json({ ok: true, ...out })
+  } catch (err) {
+    bad(res, 502, `H5 探测失败：${err?.message || String(err)}`)
   }
 })
 
