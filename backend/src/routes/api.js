@@ -10,6 +10,10 @@ import { reportPhone, phoneStatus, phoneSessions } from '../services/phone.js'
 import { runCheckin, STEPS } from '../services/pipeline.js'
 import { watcher, tickOnce } from '../services/watcher.js'
 import { sessionStore, listEvents, pushEvent } from '../store.js'
+import {
+  createJob, claimJob, finishJob, cancelJob,
+  heartbeat, listDevices, listJobs, jobState
+} from '../services/jobs.js'
 
 const router = express.Router()
 
@@ -48,6 +52,8 @@ router.get('/config', (req, res) => {
     watch: watcher.state(),
     geo: config.geo,
     steps: STEPS,
+    jobs: jobState(),
+    devices: listDevices(),
     sessions: sessionStore.list().map(s => ({
       username: s.username, xh: s.xh, xm: s.xm, createdAt: s.createdAt
     }))
@@ -402,6 +408,77 @@ router.post('/watch/poll', async (req, res) => {
     res.json({ ...watcher.state(), events: listEvents(0, 40) })
   } catch (err) {
     bad(res, 500, err instanceof Error ? err.message : String(err))
+  }
+})
+
+/* ───────────────────────── 设备任务队列（控制面） ─────────────────────────
+ * 网页点「签到」→ 入队 → 任意执行面（真机/模拟器）claim → adb 执行 → 回报。
+ * 执行面不需要账号密码：它只驱动已经登录好的 App。
+ */
+
+/** 网页侧：提交一条签到/签退任务 */
+router.post('/jobs', (req, res) => {
+  try {
+    const { username, action, lat, lng, date, time, note } = req.body || {}
+    const job = createJob({ username, action, lat, lng, date, time, note })
+    res.json({ ok: true, job, state: jobState() })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+/** 网页侧：任务列表（可按学号过滤） */
+router.get('/jobs', (req, res) => {
+  res.json({
+    ok: true,
+    state: jobState(),
+    devices: listDevices(),
+    jobs: listJobs({ username: req.query.username, limit: Number(req.query.limit || 30) })
+  })
+})
+
+router.post('/jobs/:id/cancel', (req, res) => {
+  try {
+    res.json({ ok: true, job: cancelJob(req.params.id), state: jobState() })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+router.get('/devices', (req, res) => {
+  res.json({ ok: true, devices: listDevices(), state: jobState() })
+})
+
+/** ───── 执行面（worker）───── */
+
+router.post('/device/heartbeat', (req, res) => {
+  try {
+    const { deviceId, serial, label, note } = req.body || {}
+    res.json({ ok: true, ...heartbeat({ deviceId, serial, label, note }), state: jobState() })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+router.post('/device/claim', (req, res) => {
+  try {
+    const { deviceId } = req.body || {}
+    heartbeat({ deviceId })
+    const job = claimJob(deviceId)
+    res.json({ ok: true, job })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+router.post('/device/report', (req, res) => {
+  try {
+    const { deviceId, jobId, ok, message, action, log } = req.body || {}
+    if (deviceId) heartbeat({ deviceId })
+    const job = finishJob(jobId, { ok: !!ok, message, action, log })
+    res.json({ ok: true, job, state: jobState() })
+  } catch (err) {
+    bad(res, 400, err instanceof Error ? err.message : String(err))
   }
 })
 

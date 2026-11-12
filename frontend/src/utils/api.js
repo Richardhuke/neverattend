@@ -76,5 +76,10 @@ export const api = {
   watchPoll: () => request('/watch/poll', { body: {} }),
   logout: (username) => request('/logout', { body: { username } }),
   setCoords: (username, { mode = 'custom', longitude, latitude, jitter } = {}) =>
-    request('/coords', { body: { username, mode, longitude, latitude, jitter } })
+    request('/coords', { body: { username, mode, longitude, latitude, jitter } }),
+  createJob: (payload) => request('/jobs', { body: payload }),
+  jobs: (username, limit = 20) =>
+    request(`/jobs?limit=${limit}${username ? `&username=${encodeURIComponent(username)}` : ''}`, { method: 'GET' }),
+  cancelJob: (id) => request(`/jobs/${id}/cancel`, { body: {} }),
+  devices: () => request('/devices', { method: 'GET' })
 }

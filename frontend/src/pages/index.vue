@@ -23,6 +23,16 @@ const sessions = ref([])
 const signedCount = ref(0)
 const ptmSummary = ref(null)
 const phoneInfo = ref(null)
+
+// 远程签到：网页只排队，真正的点击由执行机（连着手机 / 模拟器的 device-worker）完成
+const queueUser = ref('')
+const queueAction = ref('in')
+const queueLat = ref(30.302331)
+const queueLng = ref(120.089136)
+const queueJobs = ref([])
+const queueDevices = ref([])
+const queueMsg = ref('')
+const queueBusy = ref(false)
 const selected = ref('')
 const code = ref('')
 const autoCode = ref(false)
@@ -153,15 +163,56 @@ async function saveCoords () {
   }
 }
 
-async function afterRun () {
-  await loadStatus()
+async function loadQueue () {
+  try {
+    const [j, d] = await Promise.all([
+      api.jobs(queueUser.value || user.username, 12),
+      api.devices()
+    ])
+    queueJobs.value = j.jobs || []
+    queueDevices.value = d.devices || []
+  } catch { /* 队列未启用时忽略 */ }
+}
+
+async function submitQueue (action) {
+  const who = (queueUser.value || user.username || '').trim()
+  if (!who) { queueMsg.value = '先填学号'; return }
+  queueBusy.value = true
+  queueMsg.value = ''
+  try {
+    await api.createJob({
+      username: who,
+      action: action || queueAction.value,
+      lat: Number(queueLat.value),
+      lng: Number(queueLng.value),
+      note: '网页提交'
+    })
+    queueMsg.value = '已入队，执行机会在几秒内接手'
+    await loadQueue()
+  } catch (e) {
+    queueMsg.value = e.message || String(e)
+  } finally {
+    queueBusy.value = false
+  }
+}
+
+async function cancelQueue (id) {
+  try { await api.cancelJob(id); await loadQueue() } catch (e) { queueMsg.value = e.message || String(e) }
+}
+
+const jobText = { queued: '排队中', running: '执行中', done: '成功', failed: '失败', canceled: '已取消' }
+const jobClass = { queued: 'warn', running: '', done: 'ok', failed: 'err', canceled: '' }
+
+async function afterRun () {  await loadStatus()
   await loadWatch()
 }
 
 onMounted(async () => {
   if (user.isFirstTime) { router.push('/first-time'); return }
   await Promise.all([loadConfig(), loadStatus(), loadWatch()])
-  timer = setInterval(loadWatch, 3000)
+  queueUser.value = user.username || ''
+  await loadQueue()
+  timer = setInterval(() => { loadWatch(); loadQueue() }, 3000)
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })
 </script>
@@ -212,6 +263,58 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
           最近签到 {{ phoneInfo.lastIn ? fmt(phoneInfo.lastIn.at) : '—' }} · 最近签退 {{ phoneInfo.lastOut ? fmt(phoneInfo.lastOut.at) : '—' }}<br>
           身体素质课只能在「浙大体艺」App 里签到（网页门户没有入口，接口带原生签名）。手机上跑 autojs-ns.js，检测到「签到 / 签退」按钮会自动点击，点完回报到这里。
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>远程签到（设备队列）</h3>
+        <span class="chip" :class="queueDevices.some(d => d.online) ? 'ok' : 'warn'">
+          在线执行机 {{ queueDevices.filter(d => d.online).length }} / {{ queueDevices.length }}
+        </span>
+      </div>
+      <p class="muted small" style="margin:0 0 12px">
+        网页只负责排队；提交后由一台连着手机（或模拟器）的执行机点「浙大体艺」里的签到按钮，结果回填到上面的场次列表。
+      </p>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <label class="field" style="flex:1;min-width:140px">
+          <span>学号</span>
+          <input v-model="queueUser" placeholder="执行机上登录的学号">
+        </label>
+        <label class="field" style="width:120px">
+          <span>纬度</span>
+          <input v-model="queueLat" type="number" step="0.000001">
+        </label>
+        <label class="field" style="width:120px">
+          <span>经度</span>
+          <input v-model="queueLng" type="number" step="0.000001">
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;margin:12px 0">
+        <button class="btn primary" :disabled="queueBusy" @click="submitQueue('in')">排队签到</button>
+        <button class="btn" :disabled="queueBusy" @click="submitQueue('out')">排队签退</button>
+        <button class="btn sm" @click="loadQueue">刷新</button>
+      </div>
+      <div v-if="queueMsg" class="muted small" style="margin-bottom:10px">{{ queueMsg }}</div>
+
+      <div v-if="!queueJobs.length" class="muted small">还没有任务。</div>
+      <div v-for="j in queueJobs" :key="j.id" class="session">
+        <div class="s-main">
+          <div class="s-title">{{ j.username }} · {{ j.action === 'out' ? '签退' : '签到' }}</div>
+          <div class="s-meta">
+            {{ fmt(j.createdAt) }} · {{ j.deviceId || '未分配' }}
+            <span v-if="j.message"> · {{ j.message }}</span>
+          </div>
+        </div>
+        <span class="chip" :class="jobClass[j.status]">{{ jobText[j.status] || j.status }}</span>
+        <button v-if="j.status === 'queued'" class="btn sm" @click="cancelQueue(j.id)">取消</button>
+      </div>
+
+      <div v-if="queueDevices.length" class="muted small" style="margin-top:12px">
+        执行机：
+        <span v-for="d in queueDevices" :key="d.id" style="margin-right:10px">
+          {{ d.label || d.id }} <span class="chip" :class="d.online ? 'ok' : ''">{{ d.online ? '在线' : '离线' }}</span>
+        </span>
       </div>
     </div>
 

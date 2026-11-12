@@ -330,8 +330,17 @@ async function report (action, note) {
 
 const lastFired = { in: 0, out: 0 }
 
+/* 这一轮的机器可读结果：worker 用它决定回报什么 */
+let RESULT = { ok: false, action: null, message: '未执行' }
+function setResult (ok, action, message) {
+  RESULT = { ok: !!ok, action: action || null, message: String(message || '').slice(0, 300) }
+}
+
 /* 这节课该签到还是签退：下课时间（默认 17:50）之后算签退 */
 function pickAction () {
+  // 任务队列会显式指定动作（服务端已按课表算好），优先于按时间推断
+  const forced = String(process.env.NA_ACTION || '').toLowerCase()
+  if (forced === 'in' || forced === 'out') return forced
   const m = String(CONFIG.outFrom).match(/^(\d{1,2}):(\d{2})$/)
   if (!m) return 'in'
   const cut = Number(m[1]) * 60 + Number(m[2])
@@ -357,6 +366,8 @@ function clockStr () {
 
 /* 只在课次时间窗内动作，避免全天乱点 */
 function inWindow () {
+  // 队列模式：时间由服务端判定，执行机不再自我限制
+  if (String(process.env.NA_SKIP_WINDOW || '') === '1') return true
   const a = hhmm(CONFIG.startFrom)
   const b = hhmm(CONFIG.endAt)
   const cur = curMinutes()
@@ -379,7 +390,8 @@ async function dismissDialog (nodes) {
 }
 
 /* 签到页：点中间的大圆按钮才算提交 */
-async function submitOnSignPage ({ dry, no }) {
+async function submitOnSignPage ({ dry, no, action }) {
+  const act = action || pickAction()
   const nodes = parseNodes(await dumpUi())
   const big = nodes.find((n) => /ll_attendance$/.test(n.id) && n.w > 200 && n.h > 200)
   if (!big) {
@@ -398,12 +410,15 @@ async function submitOnSignPage ({ dry, no }) {
   const bad = all.match(/(未发现考勤地点|不在考勤范围|超出[^|]{0,8}|距离[^|]{0,12}|未到[^|]{0,8}|已结束|过期)/)
   if (ok) {
     console.log(`[ok] 第${no}次课 签到成功`)
-    await report('in', `adb 第${no}次课 签到成功`)
+    setResult(true, act, `第${no}次课 签到成功`)
+    await report(act, `adb 第${no}次课 签到成功`)
   } else if (bad) {
     console.log(`[warn] 被拒：${bad[0]}`)
+    setResult(false, act, `被拒：${bad[0]}`)
     await dismissDialog(after)
   } else {
     console.log(`[warn] 点完圆钮无明确结果：${all.slice(0, 160)}`)
+    setResult(false, act, '点完圆钮无明确结果')
     await dismissDialog(after)
   }
 }
@@ -416,12 +431,14 @@ async function tick (opts = {}) {
     console.log(`[nav] 前台是 ${pkg || '未知'}，拉起浙大体艺`)
     if (!(await launchApp())) {
       console.log('[skip] 拉不起 App，跳过这一轮')
+      setResult(false, null, '拉不起 App')
       return
     }
     await sleep(3000)
     pkg = await focusedPackage()
     if (!pkg.includes(APP_PKG)) {
       console.log(`[skip] 拉起后前台仍是 ${pkg || '未知'}，跳过`)
+      setResult(false, null, '拉起后前台不是浙大体艺')
       return
     }
   }
@@ -430,12 +447,14 @@ async function tick (opts = {}) {
   const page = pageOf(nodes)
   if (page !== 'schedule') {
     console.log(`[skip] 没走到「课程排课」页（当前 ${page}）`)
+    setResult(false, null, `没走到课程排课页（当前 ${page}）`)
     return
   }
 
   const row = findTodayRow(nodes)
   if (!row) {
     console.log(`[idle] 今天（${todayStr()}）没有课次`)
+    setResult(false, null, `今天（${todayStr()}）没有课次`)
     return
   }
 
@@ -452,6 +471,7 @@ async function tick (opts = {}) {
 
   if (!inWindow()) {
     console.log(`[idle] 现在 ${clockStr()}，不在动作时间窗 ${CONFIG.startFrom}-${CONFIG.endAt}`)
+    setResult(false, null, `不在动作时间窗 ${CONFIG.startFrom}-${CONFIG.endAt}`)
     return
   }
 
@@ -460,10 +480,12 @@ async function tick (opts = {}) {
   const btn = rowButton(nodes, row, keyword)
   if (!btn) {
     console.log(`[idle] 第${row.no}次课 没有「${keyword}」按钮（可能老师还没开场或已结束）`)
+    setResult(false, action, `第${row.no}次课 没有「${keyword}」按钮`)
     return
   }
   if (Date.now() - lastFired[action] < CONFIG.cooldown) {
     console.log(`[cool] ${keyword} 距上次 ${Math.round((Date.now() - lastFired[action]) / 1000)}s，跳过`)
+    setResult(false, action, `冷却中，${keyword}跳过`)
     return
   }
 
@@ -479,7 +501,7 @@ async function tick (opts = {}) {
   let after = parseNodes(await dumpUi())
   if (pageOf(after) === 'sign') {
     lastFired[action] = Date.now()
-    await submitOnSignPage({ dry, no: row.no })
+    await submitOnSignPage({ dry, no: row.no, action })
     return
   }
   const all = textsOf(after)
@@ -489,11 +511,14 @@ async function tick (opts = {}) {
 
   if (ok) {
     console.log(`[ok] ${keyword} 成功`)
+    setResult(true, action, `第${row.no}次课 ${keyword} 成功`)
     await report(action, `adb 第${row.no}次课 ${keyword} 成功`)
   } else if (bad) {
     console.log(`[warn] ${keyword} 被拒：${bad[0]}`)
+    setResult(false, action, `被拒：${bad[0]}`)
   } else {
     console.log(`[warn] 点了「${keyword}」但界面无成功提示，不回报。界面片段：${all.slice(0, 180)}`)
+    setResult(false, action, '界面无成功提示')
   }
 }
 
@@ -528,6 +553,7 @@ async function main () {
 
   if (has('--once')) {
     await tick()
+    console.log('[result] ' + JSON.stringify(RESULT))
     return
   }
 
