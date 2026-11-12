@@ -261,7 +261,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <div class="a-title">{{ phoneInfo.courseName || '身体素质课' }} · 手机上报</div>
         <div class="a-desc">
           最近签到 {{ phoneInfo.lastIn ? fmt(phoneInfo.lastIn.at) : '—' }} · 最近签退 {{ phoneInfo.lastOut ? fmt(phoneInfo.lastOut.at) : '—' }}<br>
-          身体素质课只能在「浙大体艺」App 里签到（网页门户没有入口，接口带原生签名）。手机上跑 autojs-ns.js，检测到「签到 / 签退」按钮会自动点击，点完回报到这里。
+          身体素质课只能在「浙大体艺」App 里签到（网页门户没有入口，接口带原生签名）。电脑插数据线跑 <code>deploy/device-worker.mjs</code>（或直接 <code>deploy/adb-ns.mjs</code>），检测到「签到 / 签退」按钮会自动点击，点完回报到这里。
         </div>
       </div>
     </div>

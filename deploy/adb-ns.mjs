@@ -130,8 +130,22 @@ async function ensureMockProvider () {
 
 async function setMockLocation (lat, lng, acc) {
   await ensureMockProvider()
+  // 反检测：真人 GPS 不会每次都在同一个点、精度也不会恒为 5 m
+  // NA_JITTER = 抖动半径（米，默认 8，设 0 关闭）；NA_MOCK_ACC = 固定精度（不给就 6-18 随机）
+  const jitter = Number(process.env.NA_JITTER ?? 8)
+  let la = Number(lat)
+  let ln = Number(lng)
+  if (jitter > 0) {
+    const r = jitter * Math.sqrt(Math.random())
+    const th = Math.random() * Math.PI * 2
+    la += (r * Math.cos(th)) / 111320
+    ln += (r * Math.sin(th)) / (111320 * Math.cos((la * Math.PI) / 180))
+  }
+  const fixedAcc = Number(process.env.NA_MOCK_ACC || 0)
+  const accuracy = acc || fixedAcc || Math.round(6 + Math.random() * 12)
   await adb(['shell', 'cmd', 'location', 'providers', 'set-test-provider-location', 'gps',
-    '--location', lat + ',' + lng, '--accuracy', String(acc || 5)])
+    '--location', la.toFixed(6) + ',' + ln.toFixed(6), '--accuracy', String(accuracy)])
+  return { lat: la, lng: ln, accuracy }
 }
 
 /* ---------- 导航：首页 → 身体素质课考勤 → 课程列表 → 课程排课 ---------- */
@@ -461,12 +475,20 @@ async function tick (opts = {}) {
   const mock = String(CONFIG.mock).match(MOCK_RE)
   if (mock) {
     try {
-      await setMockLocation(mock[1], mock[2], Number(process.env.NA_MOCK_ACC || 5))
-      console.log(`[mock] GPS 已覆盖到 ${mock[1]},${mock[2]}`)
+      const put = await setMockLocation(mock[1], mock[2])
+      console.log(`[mock] GPS 已覆盖到 ${put.lat.toFixed(6)},${put.lng.toFixed(6)}（±${put.accuracy}m）`)
       await sleep(1500)
     } catch (e) {
       console.log(`[warn] 设置模拟定位失败：${e.message}`)
     }
+  }
+
+  // 反检测：真人不会在开窗第 0 秒就点。NA_DELAY_MAX = 最多随机等多少秒（默认 0，队列模式由外部控制）
+  const delayMax = Number(process.env.NA_DELAY_MAX || 0)
+  if (delayMax > 0) {
+    const wait = Math.round(Math.random() * delayMax * 1000)
+    console.log(`[delay] 随机等待 ${(wait / 1000).toFixed(1)}s（上限 ${delayMax}s）`)
+    await sleep(wait)
   }
 
   if (!inWindow()) {
