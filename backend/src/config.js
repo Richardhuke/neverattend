@@ -57,9 +57,9 @@ export const config = {
   // 异地模式：默认场馆坐标（紫金港西区体育馆），抖动半径默认 30m
   geo: {
     venue: {
-      name: '紫金港校区西区体育馆',
-      longitude: Number(process.env.VENUE_LNG || 120.089136),
-      latitude: Number(process.env.VENUE_LAT || 30.302331)
+      name: '紫金港校区西田径场（左跑道）西侧',
+      longitude: Number(process.env.VENUE_LNG || 120.0765),
+      latitude: Number(process.env.VENUE_LAT || 30.3074)
     },
     jitterMeters: Number(process.env.GEO_JITTER_METERS || 30)
   },

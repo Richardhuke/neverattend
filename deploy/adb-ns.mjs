@@ -46,7 +46,8 @@ const CONFIG = {
   outFrom: process.env.NA_OUT_FROM || '17:50',
   startFrom: process.env.NA_START_FROM || '17:00',
   endAt: process.env.NA_END_AT || '18:20',
-  mock: process.env.NA_MOCK || ''
+  // 2026-11-12 实测：西田径场（左跑道）西侧中点，App 弹「您已进入考勤范围内」
+  mock: process.env.NA_MOCK || '30.3074,120.0765'
 }
 
 const argv = process.argv.slice(2)

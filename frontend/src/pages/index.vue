@@ -27,8 +27,8 @@ const phoneInfo = ref(null)
 // 远程签到：网页只排队，真正的点击由执行机（连着手机 / 模拟器的 device-worker）完成
 const queueUser = ref('')
 const queueAction = ref('in')
-const queueLat = ref(30.302331)
-const queueLng = ref(120.089136)
+const queueLat = ref(30.3074)
+const queueLng = ref(120.0765)
 const queueJobs = ref([])
 const queueDevices = ref([])
 const queueMsg = ref('')
@@ -43,10 +43,10 @@ const runAction = ref('in')
 
 // 异地模式：自定义坐标 + 抖动半径，服务端只比对坐标，守护进程会复用该坐标
 const awayMode = ref(false)
-const lng = ref(120.089136)
-const lat = ref(30.302331)
+const lng = ref(120.0765)
+const lat = ref(30.3074)
 const jitter = ref(30)
-const geo = ref({ venue: { name: '紫金港校区西区体育馆', longitude: 120.089136, latitude: 30.302331 }, jitterMeters: 30 })
+const geo = ref({ venue: { name: '紫金港校区西田径场（左跑道）西侧', longitude: 120.0765, latitude: 30.3074 }, jitterMeters: 30 })
 const coordsSaving = ref(false)
 
 const watchState = ref({ running: false, intervalMs: 10000, polls: 0, checkins: 0, signouts: 0, lastPollAt: null, nextPollAt: null, lastError: null })
@@ -145,8 +145,8 @@ function startRun (action = 'in') {
 }
 
 function useVenue () {
-  lng.value = geo.value?.venue?.longitude ?? 120.089136
-  lat.value = geo.value?.venue?.latitude ?? 30.302331
+  lng.value = geo.value?.venue?.longitude ?? 120.0765
+  lat.value = geo.value?.venue?.latitude ?? 30.3074
 }
 
 async function saveCoords () {

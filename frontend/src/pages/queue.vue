@@ -9,8 +9,8 @@ import { api } from '../utils/api.js'
 
 const username = ref('')
 const action = ref('in')
-const lat = ref(30.302331)
-const lng = ref(120.089136)
+const lat = ref(30.3074)
+const lng = ref(120.0765)
 const note = ref('')
 const jobs = ref([])
 const devices = ref([])
